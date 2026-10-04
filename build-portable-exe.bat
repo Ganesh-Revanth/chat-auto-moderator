@@ -3,18 +3,26 @@ title Moderation Studio - Portable .EXE Builder
 cd /d "%~dp0"
 
 echo ========================================================
-echo   Building ModerationStudio-Portable.exe
+echo   Building Standalone ModerationStudio-Portable.exe
 echo ========================================================
 
-echo [1/3] Building frontend production bundle...
+if not exist "node_modules" (
+  echo [1/4] Installing project dependencies...
+  call npm install
+)
+
+echo [2/4] Building React frontend production bundle (/dist)...
 call npm run build
 
-echo [2/3] Installing Electron packager...
-call npm install -D electron electron-builder
+echo [3/4] Bundling Express backend + Electron main into dist-electron/main.cjs...
+call npm run bundle:electron
 
-echo [3/3] Packaging standalone portable .EXE...
-call npx electron-builder --win portable
+echo [4/4] Packaging single standalone ModerationStudio-Portable.exe...
+call npx --yes electron-builder --win portable
 
 echo.
-echo Done! Your standalone portable .exe is ready in the /release folder.
+echo ========================================================
+echo   SUCCESS! Your standalone app is ready at:
+echo   release\ModerationStudio-Portable.exe
+echo ========================================================
 pause

@@ -11,6 +11,8 @@ node_modules
 dist
 dist-ssr
 *.local
+.discord_session.json
+release/
 
 # Editor directories and files
 .vscode/*

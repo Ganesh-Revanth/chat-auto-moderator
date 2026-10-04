@@ -2,13 +2,12 @@ import express from 'express';
 import fs from 'fs';
 import multer from 'multer';
 import path from 'path';
-import { fileURLToPath } from 'url';
-import { createServer as createViteServer } from 'vite';
 import WebSocket from 'ws';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const SESSION_STORE_PATH = path.join(__dirname, '.discord_session.json');
+const __dirname = process.cwd();
+const SESSION_STORE_PATH = process.env.MODSTUDIO_SESSION_PATH
+  ? path.resolve(process.env.MODSTUDIO_SESSION_PATH)
+  : path.join(__dirname, '.discord_session.json');
 
 export interface PresetDiscordChannel {
   channel_id: string;
@@ -2221,7 +2220,7 @@ async function executeDiscordStaffLogInteraction(params: {
 const ALLOWED_EXTENSIONS = new Set(['.log', '.txt', '.csv']);
 const upload = multer({ storage: multer.memoryStorage() });
 
-async function startServer() {
+export async function startServer(customPort?: number): Promise<number> {
   const app = express();
   app.use(express.json());
 
@@ -2236,6 +2235,15 @@ async function startServer() {
 
   app.get('/api/v1/punishments', (_req, res) => {
     res.json(punishmentsStore);
+  });
+
+  app.get('/api/v1/download/portable-exe', (_req, res) => {
+    const exePath = path.join(__dirname, 'release', 'ModerationStudio-Portable.exe');
+    if (!fs.existsSync(exePath)) {
+      res.status(404).json({ detail: 'ModerationStudio-Portable.exe not found in /release.' });
+      return;
+    }
+    res.download(exePath, 'ModerationStudio-Portable.exe');
   });
 
   app.get('/api/v1/discord/session', (_req, res) => {
@@ -2830,22 +2838,33 @@ async function startServer() {
   });
 
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(__dirname, 'dist');
+    const distPath = process.env.MODSTUDIO_DIST_PATH
+      ? path.resolve(process.env.MODSTUDIO_DIST_PATH)
+      : path.join(__dirname, 'dist');
     app.use(express.static(distPath));
     app.get('*all', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  app.listen(3000, '0.0.0.0', () => {
-    console.log('Server running on http://0.0.0.0:3000');
+  const targetPort = customPort ?? (Number(process.env.PORT) || 3000);
+  return new Promise<number>((resolve) => {
+    const srv = app.listen(targetPort, '0.0.0.0', () => {
+      const addr = srv.address();
+      const actualPort = typeof addr === 'object' && addr ? addr.port : targetPort;
+      console.log(`Server running on http://0.0.0.0:${actualPort}`);
+      resolve(actualPort);
+    });
   });
 }
 
-startServer();
+if (!process.env.MODSTUDIO_EMBEDDED) {
+  startServer();
+}

@@ -1,27 +1,31 @@
 {
-  "name": "frontend",
+  "name": "moderation-studio",
+  "description": "High-contrast chat log moderation analyzer and automated Discord punishment logger.",
+  "author": "Moderation Studio",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
+  "main": "dist-electron/main.cjs",
   "scripts": {
     "dev": "tsx server.ts",
     "start": "NODE_ENV=production tsx server.ts",
     "build": "tsc -b && vite build",
-    "desktop": "npx electron ./electron/main.ts",
-    "build:exe": "npm run build && npx electron-builder --win portable",
+    "bundle:electron": "npx esbuild electron/main.ts --bundle --platform=node --format=cjs --external:electron --external:vite --outfile=dist-electron/main.cjs",
+    "desktop": "npm run build && npm run bundle:electron && npx electron dist-electron/main.cjs",
+    "build:exe": "npm run build && npm run bundle:electron && npx --yes electron-builder --win portable",
     "lint": "oxlint",
     "preview": "vite preview"
   },
   "build": {
     "appId": "com.moderationstudio.desktop",
     "productName": "Moderation Studio",
+    "electronVersion": "34.3.0",
     "directories": {
       "output": "release"
     },
     "files": [
       "dist/**/*",
-      "electron/**/*",
-      "server.ts",
+      "dist-electron/**/*",
       "package.json"
     ],
     "win": {

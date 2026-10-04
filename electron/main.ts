@@ -1,56 +1,24 @@
 import { app, BrowserWindow, shell } from 'electron';
-import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
-import { fileURLToPath } from 'url';
-import http from 'http';
+import { startServer } from '../server.ts';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+process.env.MODSTUDIO_EMBEDDED = '1';
+process.env.NODE_ENV = 'production';
 
 let mainWindow: BrowserWindow | null = null;
-let serverProcess: ChildProcess | null = null;
-const PORT = 3000;
-
-function waitForServer(url: string, timeoutMs = 15000): Promise<void> {
-  const start = Date.now();
-  return new Promise((resolve, reject) => {
-    const check = () => {
-      http
-        .get(url, (res) => {
-          if (res.statusCode && res.statusCode < 500) {
-            resolve();
-          } else {
-            retry();
-          }
-        })
-        .on('error', retry);
-    };
-
-    const retry = () => {
-      if (Date.now() - start > timeoutMs) {
-        reject(new Error('Timed out waiting for local Moderation Studio server'));
-      } else {
-        setTimeout(check, 250);
-      }
-    };
-
-    check();
-  });
-}
-
-async function startLocalBackend(): Promise<void> {
-  const serverScript = path.join(__dirname, '..', 'server.ts');
-  serverProcess = spawn('npx', ['tsx', serverScript], {
-    cwd: path.join(__dirname, '..'),
-    env: { ...process.env, NODE_ENV: 'production', PORT: String(PORT) },
-    shell: true,
-    stdio: 'ignore',
-  });
-  await waitForServer(`http://127.0.0.1:${PORT}/api/v1/punishments`);
-}
 
 async function createDesktopWindow(): Promise<void> {
-  await startLocalBackend();
+  // Store .discord_session.json next to the portable .exe or in OS userData
+  const portableDir = process.env.PORTABLE_EXECUTABLE_DIR || app.getPath('userData');
+  process.env.MODSTUDIO_SESSION_PATH = path.join(portableDir, '.discord_session.json');
+  process.env.MODSTUDIO_DIST_PATH = path.join(__dirname, '..', 'dist');
+
+  let boundPort = 3000;
+  try {
+    boundPort = await startServer(3000);
+  } catch {
+    boundPort = await startServer(0);
+  }
 
   mainWindow = new BrowserWindow({
     width: 1460,
@@ -66,7 +34,7 @@ async function createDesktopWindow(): Promise<void> {
     },
   });
 
-  await mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
+  await mainWindow.loadURL(`http://127.0.0.1:${boundPort}`);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
@@ -81,18 +49,7 @@ async function createDesktopWindow(): Promise<void> {
 app.whenReady().then(createDesktopWindow);
 
 app.on('window-all-closed', () => {
-  if (serverProcess) {
-    serverProcess.kill();
-    serverProcess = null;
-  }
   if (process.platform !== 'darwin') {
     app.quit();
-  }
-});
-
-app.on('before-quit', () => {
-  if (serverProcess) {
-    serverProcess.kill();
-    serverProcess = null;
   }
 });

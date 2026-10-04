@@ -743,6 +743,15 @@ export const App: React.FC = () => {
         </nav>
 
         <div className="header-actions">
+          <a
+            href="/api/v1/download/portable-exe"
+            download="ModerationStudio-Portable.exe"
+            className="btn-secondary"
+            style={{ height: '34px', padding: '0 0.75rem', fontSize: '0.76rem', textDecoration: 'none' }}
+            title="Download the compiled standalone Windows desktop executable (ModerationStudio-Portable.exe)"
+          >
+            <Download size={13} /> Download .EXE
+          </a>
           {!isStandaloneApp && deferredInstallPrompt && (
             <button
               type="button"
