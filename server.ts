@@ -8,6 +8,14 @@ const __dirname = process.cwd();
 const SESSION_STORE_PATH = process.env.MODSTUDIO_SESSION_PATH
   ? path.resolve(process.env.MODSTUDIO_SESSION_PATH)
   : path.join(__dirname, '.discord_session.json');
+const SCAN_MEMORY_DIR = path.join(__dirname, '.modstudio_memory');
+if (!fs.existsSync(SCAN_MEMORY_DIR)) {
+  try {
+    fs.mkdirSync(SCAN_MEMORY_DIR, { recursive: true });
+  } catch {
+    // ignore
+  }
+}
 
 export interface PresetDiscordChannel {
   channel_id: string;
@@ -175,6 +183,14 @@ export interface ParseErrorRecord {
   reason: string;
 }
 
+export interface CacheHitMetadata {
+  cache_hit: boolean;
+  cached_messages_reused: number;
+  newly_scanned_messages: number;
+  total_cached_in_channel: number;
+  last_synced_at: string;
+}
+
 export interface LogParseResponse {
   file_name: string;
   file_size_bytes: number;
@@ -194,6 +210,7 @@ export interface LogParseResponse {
   category_breakdown: Record<string, number>;
   player_profiles: Record<string, PlayerProfile>;
   messages_preview: MessageRecord[];
+  cache_metadata?: CacheHitMetadata;
 }
 
 export interface PunishmentRecord {
@@ -201,6 +218,7 @@ export interface PunishmentRecord {
   case_id: string;
   created_at: string;
   message_id?: number;
+  staff_action_mode?: 'log' | 'request';
   username: string;
   punishment_type: string;
   duration: string;
@@ -285,46 +303,49 @@ const EXEMPT_WORDS = new Set([
   'title', 'titles', 'titan', 'attitude', 'entity', 'entities',
   'spite', 'despite', 'hospitable',
   'butter', 'canal', 'country', 'count',
+  'night', 'nights', 'knight', 'knights', 'ignite', 'ignited', 'enigma', 'sign', 'benign', 'align', 'assign', 'resign', 'design', 'insignia', 'dignity', 'indignant',
+  'snicker', 'snickers', 'snigger',
+  'chigger', 'trigger', 'triggers', 'triggered', 'bigger', 'digger', 'vigor', 'rigor', 'figure', 'figures',
 ]);
 
 type PatternTuple = [RegExp, string, number, string];
 
 const SLUR_PATTERNS: PatternTuple[] = [
-  [/\b(n[i1l]gg[e3a4]r?|n[i1l]g+a)\b/i, 'Severe racial slur detected', 0.99, 'critical'],
-  [/\b(f[a4]gg?[o0i1]t?s?|f[a4]g)\b/i, 'Severe homophobic slur detected', 0.98, 'critical'],
-  [/\b(tr[a4]nn[y1i]|ch[i1]nk|k[i1]ke|sp[i1]c|w[e3]tb[a4]ck)\b/i, 'Hate speech / identity slur detected', 0.98, 'critical'],
-  [/\b(retard(?:ed)?|tard)\b/i, 'Ableist slur / derogatory term detected', 0.94, 'high'],
+  [/\b(n+[i1l!|]+g+[e3a4o0u]*[rzkx]*s?|n+[i1l!|]+g+s?|n+[i1l!|]+g+l+[e3]+t+s?|w+[i1l!|]+g+g*[e3a4]+r*s?|w+[i1l!|]+g+z?)\b/i, 'Racial slur or slur evasion (n-word / wigga variant) detected', 0.99, 'critical'],
+  [/\b(f+[a4@]+g+g*[o0i1e3]*t*s?|f+[a4@]+g+s?|d+y+k+e+s?)\b/i, 'Homophobic slur detected', 0.98, 'critical'],
+  [/\b(tr[a4@]nn(?:y|ies)|ch[i1!]nk+s?|k[i1!]ke+s?|sp[i1!]c+s?|w[e3]tb[a4@]ck+s?|g[o0]{2}k+s?|c[o0]{2}n+s?|beaner+s?|raghead+s?|towelhead+s?)\b/i, 'Hate speech / identity slur detected', 0.98, 'critical'],
+  [/\b(r+[e3]+t+[a4@]+r+d+(?:ed|s)?|t+[a4@]+r+d+s?)\b/i, 'Ableist slur / derogatory term detected', 0.94, 'high'],
 ];
 
 const THREAT_PATTERNS: PatternTuple[] = [
-  [/\b(k[y1i]s|k[i1]ll\s+y(?:our)?self)\b/i, 'Suicide encouragement / threat (kys)', 0.98, 'critical'],
-  [/\b(i(?:\s*will|'ll|\s+gonna)\s+(?:[\w\s]{0,20}\s+)?(?:kill|murder|hunt|shoot|stab|slit)\s+(?:you|u))\b/i, 'Direct physical violence threat', 0.95, 'critical'],
-  [/\b(doxx?(?:ing|ed)?\s+you|leak(?:ing)?\s+your\s+(?:ip|address|coords))\b/i, 'Doxxing / personal information threat', 0.93, 'high'],
-  [/\b(swat(?:ting)?\s+you)\b/i, 'Swatting threat', 0.95, 'critical'],
+  [/\b(k+[y1i]+s+|k+[i1!]+l+l*\s*(?:ur|your|yo)?\s*s+e+l+f+|g+o+\s*d+i+e+|neck\s*yourself|hang\s*yourself)\b/i, 'Suicide encouragement / self-harm threat (kys)', 0.98, 'critical'],
+  [/\b(i(?:\s*will|'ll|\s+gonna|\s+am\s+going\s+to)\s+(?:[\w\s]{0,20}\s+)?(?:kill|murder|hunt|shoot|stab|slit|rape|strangle)\s+(?:you|u|ur\s+family|your\s+family))\b/i, 'Direct physical violence threat', 0.96, 'critical'],
+  [/\b(doxx?(?:ing|ed)?\s+(?:you|u)|leak(?:ing)?\s+(?:your|ur)\s+(?:ip|address|coords|dox)|drop(?:ping)?\s+(?:your|ur)\s+ip)\b/i, 'Doxxing / personal information threat', 0.94, 'high'],
+  [/\b(swat(?:ting|ted)?\s+(?:you|u))\b/i, 'Swatting threat', 0.96, 'critical'],
 ];
 
 const INSULT_PATTERNS: PatternTuple[] = [
-  [/\b(idiot|idiots|idiotic)\b/i, 'Direct insult (idiot)', 0.90, 'medium'],
-  [/\b(moron|morons|imbecile)\b/i, 'Direct insult (moron)', 0.88, 'medium'],
-  [/\b(loser|losers|noob|trash\s+player)\b/i, 'Derogatory taunt / insult', 0.75, 'low'],
-  [/\b(stfu|shut\s+up|get\s+lost|get\s+cancer)\b/i, 'Hostile harassment / abusive demand', 0.86, 'medium'],
-  [/\b(clown|garbage|worthless)\b/i, 'Belittling insult', 0.80, 'low'],
+  [/\b(p+u+s+s+(?:y+|i+e+s+|i+s+)|p+u+s+y+s?)\b/i, 'Derogatory insult / profanity (pussy / pussies)', 0.92, 'medium'],
+  [/\b(idiot+s?|idiotic|moron+s?|imbecile+s?|dumbass(?:es)?|dipshit+s?|jackass(?:es)?|scumbag+s?|degenerate+s?)\b/i, 'Direct personal insult', 0.90, 'medium'],
+  [/\b(stfu|shut\s+the\s+f+u*c*k*\s+up|get\s+cancer|hope\s+u\s+get\s+cancer|kill\s+urself|jump\s+off\s+a\s+bridge)\b/i, 'Hostile harassment / abusive demand', 0.92, 'high'],
+  [/\b(whore+s?|slut+s?|skank+s?|hoe+s?|thot+s?|prostitute+s?)\b/i, 'Derogatory gendered insult', 0.91, 'medium'],
+  [/\b(worthless|subhuman|inbred+s?|braindead|autistic\s+fuck|cancerous)\b/i, 'Dehumanizing / hostile insult', 0.88, 'medium'],
 ];
 
 const PROFANITY_PATTERNS: PatternTuple[] = [
-  [/\b(f+u+c+k+(?:ing|er|ed)?|f+k)\b/gi, 'Explicit profanity (f-word)', 0.92, 'medium'],
-  [/\b(s+h+i+t+(?:ty|head)?)\b/gi, 'Vulgar profanity (shit)', 0.85, 'low'],
-  [/\b(b+i+t+c+h+(?:es)?)\b/gi, 'Vulgar profanity (bitch)', 0.90, 'medium'],
-  [/\b(a+s+s+h+o+l+e+s?)\b/gi, 'Vulgar profanity (asshole)', 0.90, 'medium'],
-  [/\b(b+a+s+t+a+r+d+s?)\b/gi, 'Vulgar profanity (bastard)', 0.85, 'low'],
+  [/\b(f+u+c+k+(?:ing|er|ers|ed|s|head|wit|tard|boy|boi)?|m+o+t+h+e+r+f+u+c+k+(?:er|ers|ing)?|f+k+(?:ing|er|ed)?|f+u+k+(?:ing|er)?)\b/gi, 'Explicit profanity (f-word)', 0.92, 'medium'],
+  [/\b(s+h+i+t+(?:ty|head|heads|bag|stain|s|ting|ted)?|b+u+l+l+s+h+i+t+)\b/gi, 'Vulgar profanity (shit)', 0.86, 'low'],
+  [/\b(b+i+t+c+h+(?:es|y|ing|ed)?|b+i+a+t+c+h+|s+o+n+\s+o+f+\s+a+\s+b+i+t+c+h+)\b/gi, 'Vulgar profanity (bitch)', 0.91, 'medium'],
+  [/\b(a+s+s+h+o+l+e+s?|a+s+s+h+a+t+s?|a+s+s+w+i+p+e+s?|f+a+t+a+s+s+|b+i+t+c+h+a+s+s+)\b/gi, 'Vulgar profanity (asshole / compound)', 0.90, 'medium'],
+  [/\b(b+a+s+t+a+r+d+s?)\b/gi, 'Vulgar profanity (bastard)', 0.86, 'low'],
   [/\b(c+u+n+t+s?)\b/gi, 'Severe profanity (cunt)', 0.96, 'high'],
-  [/\b(d+i+c+k+(?:head)?)\b/gi, 'Vulgar profanity (dick)', 0.88, 'medium'],
-  [/\b(p+u+s+s+y+)\b/gi, 'Vulgar profanity (pussy)', 0.90, 'medium'],
+  [/\b(d+i+c+k+(?:head|heads|sucker|wad|less|s)?|c+o+c+k+(?:sucker|suckers|head|s)?)\b/gi, 'Vulgar profanity (dick / cock)', 0.89, 'medium'],
+  [/\b(p+u+s+s+(?:y+|i+e+s+|i+s+)|p+u+s+y+s?|t+w+a+t+s?|p+r+i+c+k+s?)\b/gi, 'Vulgar profanity (pussy / pussies / twat)', 0.92, 'medium'],
 ];
 
 const SEXUAL_PATTERNS: PatternTuple[] = [
-  [/\b(send\s+nudes?|nsfw|porn(?:o|ography)?|xxx)\b/i, 'Inappropriate / sexual solicitation', 0.92, 'high'],
-  [/\b(horny|blowjob|handjob|hentai)\b/i, 'Sexually explicit content', 0.88, 'medium'],
+  [/\b(send\s+nudes?|nsfw|porn(?:o|ography)?|xxx|onlyfans)\b/i, 'Inappropriate / sexual solicitation', 0.92, 'high'],
+  [/\b(horny|blowjob+s?|handjob+s?|hentai|cum(?:shot|slut|dumpster)?|jizz|dildo+s?|masturbat(?:e|ing)|gangbang)\b/i, 'Sexually explicit content', 0.90, 'medium'],
 ];
 
 const SUSPICIOUS_URL_PATTERNS: PatternTuple[] = [
@@ -356,33 +377,11 @@ class RuleModerationEngine {
       }
     };
 
-    // 1. Spam checks
-    const alphaChars = Array.from(rawMessage).filter((c) => /[a-zA-Z]/.test(c));
-    if (alphaChars.length >= 6) {
-      const upperCount = alphaChars.filter((c) => c === c.toUpperCase() && c !== c.toLowerCase()).length;
-      if (upperCount / alphaChars.length >= 0.75) {
-        categories.add('spam');
-        updateSeverity('low');
-        updateConfidence(0.85);
-        reasons.push('Excessive capitalization (caps lock spam)');
-      }
-    }
+    // Note: Harmless capitalization (caps lock) and harmless stretched greetings (e.g. "hiiiiiiiii")
+    // are intentionally NOT flagged so moderation focuses strictly on harmful player intent, slurs,
+    // profanity, insults, threats, sexual content, and malicious links.
 
-    if (/[!?]{4,}/.test(rawMessage)) {
-      categories.add('spam');
-      updateSeverity('low');
-      updateConfidence(0.80);
-      reasons.push('Excessive punctuation spam');
-    }
-
-    if (/([a-zA-Z])\1{5,}/.test(rawMessage)) {
-      categories.add('spam');
-      updateSeverity('low');
-      updateConfidence(0.80);
-      reasons.push('Character flood repetition spam');
-    }
-
-    // 2. Suspicious URLs / Ads
+    // 1. Suspicious URLs / Ads
     for (const [pattern, reason, conf, sev] of SUSPICIOUS_URL_PATTERNS) {
       if (pattern.test(rawMessage)) {
         categories.add('suspicious_url');
@@ -392,20 +391,28 @@ class RuleModerationEngine {
       }
     }
 
-    // 3. Content normalization
+    // 2. Content normalization (also inspect both normalized and deobfuscated forms)
+    const normalized = normalizer.normalize(rawMessage);
     const deobfuscated = normalizer.deobfuscate(rawMessage);
+    const targetsToCheck = deobfuscated !== normalized ? [normalized, deobfuscated] : [deobfuscated];
 
     for (const [pattern, reason, conf, sev] of SLUR_PATTERNS) {
-      if (pattern.test(deobfuscated)) {
-        categories.add('slur');
-        updateSeverity(sev);
-        updateConfidence(conf);
-        reasons.push(reason);
+      for (const targetText of targetsToCheck) {
+        const match = pattern.exec(targetText);
+        if (match) {
+          const matchedWord = match[0].toLowerCase().trim();
+          if (EXEMPT_WORDS.has(matchedWord)) continue;
+          categories.add('slur');
+          updateSeverity(sev);
+          updateConfidence(conf);
+          reasons.push(`${reason}: '${matchedWord}'`);
+          break;
+        }
       }
     }
 
     for (const [pattern, reason, conf, sev] of THREAT_PATTERNS) {
-      if (pattern.test(deobfuscated)) {
+      if (targetsToCheck.some((t) => pattern.test(t))) {
         categories.add('threat');
         updateSeverity(sev);
         updateConfidence(conf);
@@ -414,34 +421,51 @@ class RuleModerationEngine {
     }
 
     for (const [pattern, reason, conf, sev] of INSULT_PATTERNS) {
-      if (pattern.test(deobfuscated)) {
-        categories.add('insult');
-        updateSeverity(sev);
-        updateConfidence(conf);
-        reasons.push(reason);
+      for (const targetText of targetsToCheck) {
+        const match = pattern.exec(targetText);
+        if (match) {
+          const matchedWord = match[0].toLowerCase().trim();
+          if (EXEMPT_WORDS.has(matchedWord)) continue;
+          categories.add('insult');
+          updateSeverity(sev);
+          updateConfidence(conf);
+          reasons.push(`${reason}: '${matchedWord}'`);
+          break;
+        }
       }
     }
 
     for (const [pattern, reason, conf, sev] of PROFANITY_PATTERNS) {
-      pattern.lastIndex = 0;
-      const matches = deobfuscated.matchAll(pattern);
-      for (const match of matches) {
-        const word = match[0].toLowerCase();
-        if (EXEMPT_WORDS.has(word)) continue;
-        categories.add('profanity');
-        updateSeverity(sev);
-        updateConfidence(conf);
-        reasons.push(`${reason}: '${word}'`);
-        break;
+      let matchedProfanity = false;
+      for (const targetText of targetsToCheck) {
+        pattern.lastIndex = 0;
+        const matches = targetText.matchAll(pattern);
+        for (const match of matches) {
+          const word = match[0].toLowerCase().trim();
+          if (EXEMPT_WORDS.has(word)) continue;
+          categories.add('profanity');
+          updateSeverity(sev);
+          updateConfidence(conf);
+          reasons.push(`${reason}: '${word}'`);
+          matchedProfanity = true;
+          break;
+        }
+        if (matchedProfanity) break;
       }
     }
 
     for (const [pattern, reason, conf, sev] of SEXUAL_PATTERNS) {
-      if (pattern.test(deobfuscated)) {
-        categories.add('sexual');
-        updateSeverity(sev);
-        updateConfidence(conf);
-        reasons.push(reason);
+      for (const targetText of targetsToCheck) {
+        const match = pattern.exec(targetText);
+        if (match) {
+          const matchedWord = match[0].toLowerCase().trim();
+          if (EXEMPT_WORDS.has(matchedWord)) continue;
+          categories.add('sexual');
+          updateSeverity(sev);
+          updateConfidence(conf);
+          reasons.push(`${reason}: '${matchedWord}'`);
+          break;
+        }
       }
     }
 
@@ -544,12 +568,18 @@ class LocalSemanticModerator {
       harassment = Math.min(1.0, harassment + 0.10);
     }
 
-    if (/\b(fuck|shit|bitch|cunt|dick|asshole)\b/.test(msgLower)) {
-      toxicity = Math.max(toxicity, 0.75);
-      if (msgLower.includes('fuck you') || msgLower.includes('bitch')) {
-        personal_attack = Math.max(personal_attack, 0.80);
-        harassment = Math.max(harassment, 0.75);
+    if (/\b(fuck(?:ing|er|ers|ed|s)?|shit(?:ty|head|s)?|bitch(?:es)?|cunt+s?|dick(?:head|s)?|asshole+s?|puss(?:y|ies|is)|twat+s?)\b/.test(msgLower)) {
+      toxicity = Math.max(toxicity, 0.78);
+      if (msgLower.includes('fuck you') || msgLower.includes('bitch') || msgLower.includes('puss')) {
+        personal_attack = Math.max(personal_attack, 0.82);
+        harassment = Math.max(harassment, 0.78);
       }
+    }
+
+    if (/\b(n+[i1l!|]+g+[e3a4o0u]*[rzkx]*s?|n+[i1l!|]+g+s?|w+[i1l!|]+g+g*[e3a4]+r*s?|f+[a4@]+g+g*[o0i1e3]*t*s?|r+[e3]+t+[a4@]+r+d+(?:ed|s)?)\b/.test(msgLower)) {
+      identity_attack = Math.max(identity_attack, 0.96);
+      toxicity = Math.max(toxicity, 0.95);
+      severe_toxicity = Math.max(severe_toxicity, 0.92);
     }
 
     if (/\b(kys|kill\s+yourself)\b/.test(msgLower)) {
@@ -1463,6 +1493,415 @@ function processDiscordMessagesArray(
 }
 
 // ==========================================
+// 7B. SMART SCAN MEMORY VAULT (PERSISTENT DELTA CACHE)
+// ==========================================
+
+interface ChannelMemoryCacheRecord {
+  channel_id: string;
+  channel_name: string;
+  guild_id?: string;
+  detected_gamemode?: string;
+  last_synced_at: string;
+  newest_message_id?: string;
+  raw_discord_messages: any[];
+  cached_summary: {
+    cached_messages_count: number;
+    flagged_messages_count: number;
+    critical_severity_count: number;
+    high_severity_count: number;
+  };
+}
+
+const channelMemoryCache = new Map<string, ChannelMemoryCacheRecord>();
+
+function getChannelMemoryFilePath(channelId: string): string {
+  const safeId = channelId.replace(/[^a-zA-Z0-9_-]/g, '');
+  return path.join(SCAN_MEMORY_DIR, `channel_${safeId}.json`);
+}
+
+function loadAllChannelMemoriesFromDisk() {
+  try {
+    if (!fs.existsSync(SCAN_MEMORY_DIR)) return;
+    const files = fs.readdirSync(SCAN_MEMORY_DIR).filter((f) => f.startsWith('channel_') && f.endsWith('.json'));
+    for (const file of files) {
+      try {
+        const raw = fs.readFileSync(path.join(SCAN_MEMORY_DIR, file), 'utf-8');
+        const parsed: ChannelMemoryCacheRecord = JSON.parse(raw);
+        if (parsed && parsed.channel_id && Array.isArray(parsed.raw_discord_messages)) {
+          channelMemoryCache.set(parsed.channel_id, parsed);
+        }
+      } catch {
+        // ignore corrupt cache file
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+loadAllChannelMemoriesFromDisk();
+
+function saveChannelMemoryToDisk(record: ChannelMemoryCacheRecord) {
+  channelMemoryCache.set(record.channel_id, record);
+  try {
+    // Keep up to 30,000 most recent Discord messages on disk per channel for instant reload
+    const toSave: ChannelMemoryCacheRecord = {
+      ...record,
+      raw_discord_messages: record.raw_discord_messages.slice(0, 30000),
+    };
+    fs.writeFileSync(getChannelMemoryFilePath(record.channel_id), JSON.stringify(toSave), 'utf-8');
+  } catch {
+    // ignore disk write error
+  }
+}
+
+function deleteChannelMemory(channelId: string) {
+  channelMemoryCache.delete(channelId);
+  try {
+    const p = getChannelMemoryFilePath(channelId);
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  } catch {
+    // ignore
+  }
+}
+
+// ==========================================
+// 7C. LIVE CHAT MODERATION RADAR & ALERT STREAM
+// ==========================================
+
+export interface LiveFeedAlertItem {
+  id: string;
+  discord_message_id: string;
+  channel_id: string;
+  channel_name: string;
+  guild_id?: string;
+  detected_gamemode?: string;
+  timestamp: string;
+  received_at: string;
+  player: string;
+  message: string;
+  discord_message_url?: string;
+  is_flagged: boolean;
+  severity: string;
+  confidence: number;
+  overall_score: number;
+  primary_category: string;
+  categories: string[];
+  reasons: string[];
+  acknowledged?: boolean;
+}
+
+export interface MonitoredChannelLiveState {
+  channel_id: string;
+  channel_name: string;
+  guild_id?: string;
+  detected_gamemode?: string;
+  status: 'working' | 'standby' | 'rate_limited' | 'unreachable';
+  status_detail?: string;
+  last_message_id: string;
+  last_polled_at: string | null;
+  messages_seen: number;
+  flags_detected: number;
+}
+
+interface LiveMonitorState {
+  running: boolean;
+  mode: 'all' | 'single';
+  token: string;
+  channel_id: string;
+  channel_name: string;
+  guild_id?: string;
+  monitored_channels: MonitoredChannelLiveState[];
+  poll_interval_ms: number;
+  started_at: string | null;
+  last_polled_at: string | null;
+  last_seen_discord_id: string | null;
+  total_seen_live: number;
+  total_flagged_live: number;
+  error: string | null;
+  recent_messages: LiveFeedAlertItem[];
+  active_alerts: LiveFeedAlertItem[];
+  timer: ReturnType<typeof setInterval> | null;
+  is_polling: boolean;
+}
+
+const DEFAULT_FALLBACK_GAMEMODES: Record<string, { label: string; gamemode: string }> = {
+  '1474488688812495094': { label: '#lifesteal-chat', gamemode: 'Lifesteal' },
+  '1473478972816752650': { label: '#survival-chat', gamemode: 'Survival' },
+  '1473793765008343285': { label: '#skyblock-chat', gamemode: 'Skyblock' },
+  '1473814315948834973': { label: '#bedwars-chat', gamemode: 'Bedwars' },
+  '1484703765629243423': { label: '#pvp-arena-chat', gamemode: 'PvP' },
+  '1546730982525116497': { label: '#global-lobby-chat', gamemode: 'Lobby' },
+};
+
+function buildInitialMonitoredChannelsList(): MonitoredChannelLiveState[] {
+  return sessionState.preset_channels.map((p) => {
+    const cached = channelMemoryCache.get(p.channel_id);
+    const fb = DEFAULT_FALLBACK_GAMEMODES[p.channel_id];
+    const resolvedName =
+      p.name && !p.name.startsWith('Channel ')
+        ? p.name
+        : cached?.channel_name || fb?.label || p.name;
+    const gm =
+      cached?.detected_gamemode ||
+      inferGamemodeFromChannel(resolvedName) ||
+      fb?.gamemode ||
+      'SMP';
+    return {
+      channel_id: p.channel_id,
+      channel_name: resolvedName,
+      guild_id: p.guild_id || '1250416860000817162',
+      detected_gamemode: gm,
+      status: 'standby',
+      last_message_id: cached?.newest_message_id || '',
+      last_polled_at: null,
+      messages_seen: 0,
+      flags_detected: 0,
+    };
+  });
+}
+
+const liveMonitor: LiveMonitorState = {
+  running: false,
+  mode: 'all',
+  token: '',
+  channel_id: 'all',
+  channel_name: 'All Working Channels',
+  guild_id: '1250416860000817162',
+  monitored_channels: buildInitialMonitoredChannelsList(),
+  poll_interval_ms: 4000,
+  started_at: null,
+  last_polled_at: null,
+  last_seen_discord_id: null,
+  total_seen_live: 0,
+  total_flagged_live: 0,
+  error: null,
+  recent_messages: [],
+  active_alerts: [],
+  timer: null,
+  is_polling: false,
+};
+
+function evaluateSingleLiveLine(
+  dMsgId: string,
+  channelId: string,
+  channelName: string,
+  guildId: string | undefined,
+  timestamp: string,
+  player: string,
+  messageBody: string,
+  detectedGamemode?: string
+): LiveFeedAlertItem {
+  const ruleEval = ruleEngine.evaluate(messageBody);
+  const aiEval = aiModerator.analyzeMessage(messageBody);
+  const hybridEval = hybridScorer.score(ruleEval, aiEval);
+
+  const messageUrl =
+    channelId && dMsgId
+      ? `https://discord.com/channels/${guildId || '1250416860000817162'}/${channelId}/${dMsgId}`
+      : undefined;
+
+  const gm =
+    detectedGamemode ||
+    inferGamemodeFromChannel(channelName) ||
+    DEFAULT_FALLBACK_GAMEMODES[channelId]?.gamemode ||
+    'SMP';
+
+  // Also append to active parserManager.currentMessages so the main Review Queue stays in sync!
+  const newRecordId = parserManager.currentMessages.length;
+  const newLineNum =
+    (parserManager.currentMessages[parserManager.currentMessages.length - 1]?.line_number || 0) + 1;
+  const fullRecord: MessageRecord = {
+    id: newRecordId,
+    timestamp,
+    player,
+    message: messageBody,
+    raw_line: `[${timestamp}] [${channelName}] ${player} » ${messageBody}`,
+    line_number: newLineNum,
+    discord_message_url: messageUrl,
+    is_flagged: hybridEval.is_flagged,
+    overall_score: hybridEval.overall_score,
+    rule_score: hybridEval.rule_score,
+    ai_score: hybridEval.ai_score,
+    severity: hybridEval.severity,
+    confidence: hybridEval.confidence,
+    primary_category: hybridEval.primary_category,
+    categories: hybridEval.all_categories,
+    reasons: hybridEval.reasons,
+    ai_breakdown: hybridEval.ai_breakdown,
+    review_status: 'unreviewed',
+    moderator_notes: '',
+  };
+  parserManager.currentMessages.push(fullRecord);
+  parserManager.currentProfiles = buildPlayerProfiles(parserManager.currentMessages);
+
+  return {
+    id: `${dMsgId}-${Math.random().toString(36).slice(2, 7)}`,
+    discord_message_id: dMsgId,
+    channel_id: channelId,
+    channel_name: channelName,
+    guild_id: guildId,
+    detected_gamemode: gm,
+    timestamp,
+    received_at: new Date().toISOString().replace('T', ' ').slice(11, 19),
+    player,
+    message: messageBody,
+    discord_message_url: messageUrl,
+    is_flagged: hybridEval.is_flagged,
+    severity: hybridEval.severity,
+    confidence: hybridEval.confidence,
+    overall_score: hybridEval.overall_score,
+    primary_category: hybridEval.primary_category,
+    categories: hybridEval.all_categories,
+    reasons: hybridEval.reasons,
+    acknowledged: false,
+  };
+}
+
+async function pollSingleChannelInMonitor(chanState: MonitoredChannelLiveState) {
+  if (!liveMonitor.running || !liveMonitor.token) return;
+  try {
+    const query = new URLSearchParams({ limit: '20' });
+    if (chanState.last_message_id) {
+      query.set('after', chanState.last_message_id);
+    }
+    const url = `https://discord.com/api/v10/channels/${chanState.channel_id}/messages?${query.toString()}`;
+    const res = await fetchDiscordWithToken(url, liveMonitor.token);
+    const nowTime = new Date().toISOString().replace('T', ' ').slice(11, 19);
+    chanState.last_polled_at = nowTime;
+    liveMonitor.last_polled_at = nowTime;
+
+    if (res.status === 429) {
+      chanState.status = 'rate_limited';
+      chanState.status_detail = 'Rate limited by Discord, backing off';
+      return;
+    }
+
+    if (!res.ok) {
+      const errBody: any = await res.json().catch(() => ({}));
+      chanState.status = 'unreachable';
+      chanState.status_detail = `HTTP ${res.status}: ${errBody?.message || 'Inaccessible'}`;
+      return;
+    }
+
+    chanState.status = 'working';
+    chanState.status_detail = 'Live stream active';
+    const batch: any[] = await res.json();
+    if (!Array.isArray(batch) || batch.length === 0) return;
+
+    // Discord returns newest first; reverse to process chronologically
+    const chronological = [...batch].reverse();
+    const BRIDGE_LINE = /^(?:\*\*[^*]+\*\*\s+)?(?:[A-Z][A-Z0-9_]{1,15}\s+)?([^\s\u00bb]{1,32})\s+(?:\u00bb|>>)\s+(.+)$/;
+    const MC_BRACKET_LINE = /^(?:\[[^\]]+\]\s*)?<([^>]+)>\s*(.+)$/;
+    const SERVER_EVENT = /(joined the server|left the server|joined the game|left the game)/i;
+
+    // If this was the very first seed poll on this channel, take up to last 5 messages per channel so multi-channel doesn't flood
+    const maxSeed = liveMonitor.mode === 'all' ? 5 : 10;
+    const toProcess = !chanState.last_message_id ? chronological.slice(-maxSeed) : chronological;
+    chanState.last_message_id = String(batch[0].id);
+
+    // Prepend new Discord messages into Smart Memory Cache if this channel is cached
+    const cachedChan = channelMemoryCache.get(chanState.channel_id);
+    if (cachedChan) {
+      const existingIds = new Set(cachedChan.raw_discord_messages.map((m) => String(m.id)));
+      const brandNewRaw = batch.filter((m) => !existingIds.has(String(m.id)));
+      if (brandNewRaw.length > 0) {
+        cachedChan.raw_discord_messages = [...brandNewRaw, ...cachedChan.raw_discord_messages];
+        cachedChan.newest_message_id = String(batch[0].id);
+        cachedChan.last_synced_at = new Date().toISOString().replace('T', ' ').slice(0, 19);
+        saveChannelMemoryToDisk(cachedChan);
+      }
+    }
+
+    for (const dMsg of toProcess) {
+      const content = String(dMsg.content || '').trim();
+      if (!content || SERVER_EVENT.test(content)) continue;
+      const isoTs = dMsg.timestamp ? new Date(dMsg.timestamp) : null;
+      const formattedTs =
+        isoTs && !isNaN(isoTs.getTime())
+          ? isoTs.toISOString().replace('T', ' ').slice(0, 19)
+          : new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+      const subLines = content.split(/\r?\n/);
+      for (const sub of subLines) {
+        const trimmedSub = sub.trim();
+        if (!trimmedSub || SERVER_EVENT.test(trimmedSub)) continue;
+
+        let player = dMsg.author?.global_name || dMsg.author?.username || 'Unknown';
+        let messageBody = trimmedSub;
+
+        const bridgeMatch = BRIDGE_LINE.exec(trimmedSub);
+        const mcMatch = MC_BRACKET_LINE.exec(trimmedSub);
+        if (bridgeMatch) {
+          player = bridgeMatch[1].trim();
+          messageBody = bridgeMatch[2].trim();
+        } else if (mcMatch) {
+          player = cleanPlayerName(mcMatch[1]);
+          messageBody = mcMatch[2].trim();
+        }
+
+        const item = evaluateSingleLiveLine(
+          String(dMsg.id),
+          chanState.channel_id,
+          chanState.channel_name,
+          chanState.guild_id,
+          formattedTs,
+          player,
+          messageBody,
+          chanState.detected_gamemode
+        );
+
+        chanState.messages_seen++;
+        liveMonitor.total_seen_live++;
+        liveMonitor.recent_messages.unshift(item);
+        if (liveMonitor.recent_messages.length > 250) {
+          liveMonitor.recent_messages.length = 250;
+        }
+
+        if (item.is_flagged) {
+          chanState.flags_detected++;
+          liveMonitor.total_flagged_live++;
+          liveMonitor.active_alerts.unshift(item);
+          if (liveMonitor.active_alerts.length > 150) {
+            liveMonitor.active_alerts.length = 150;
+          }
+        }
+      }
+    }
+  } catch (err: any) {
+    chanState.status = 'unreachable';
+    chanState.status_detail = err?.message || 'Poll error';
+  }
+}
+
+async function pollLiveDiscordChannelOnce() {
+  if (!liveMonitor.running || !liveMonitor.token || liveMonitor.is_polling) return;
+  liveMonitor.is_polling = true;
+  try {
+    const activeTargets = liveMonitor.monitored_channels.filter(
+      (c) => c.status !== 'unreachable'
+    );
+    if (activeTargets.length === 0) {
+      liveMonitor.error = 'No reachable Discord channels found with the current token.';
+      return;
+    }
+    liveMonitor.error = null;
+    for (const ch of activeTargets) {
+      if (!liveMonitor.running) break;
+      await pollSingleChannelInMonitor(ch);
+      // Small stagger between channels to avoid Discord burst rate limits
+      if (activeTargets.length > 1) {
+        await new Promise((r) => setTimeout(r, 180));
+      }
+    }
+  } catch (err: any) {
+    liveMonitor.error = err?.message || 'Live multi-channel polling error';
+  } finally {
+    liveMonitor.is_polling = false;
+  }
+}
+
+// ==========================================
 // 8. AUTOMATED /STAFF LOG PUNISHMENT + MODAL SUBMITTER
 // ==========================================
 
@@ -1474,30 +1913,41 @@ interface DiscoveredCommandInfo {
   allCommandNames: string[];
 }
 
-function scoreCommandCandidate(c: any): number {
+function scoreCommandCandidate(c: any, actionMode: 'log' | 'request' = 'log'): number {
   if (!c) return -1;
   const name = String(c?.name || '').toLowerCase();
   const opts: any[] = Array.isArray(c?.options) ? c.options : [];
-  const hasLogGroup = opts.some((o) => o?.type === 2 && String(o?.name || '').toLowerCase() === 'log');
+  const hasTargetGroup = opts.some(
+    (o) => o?.type === 2 && String(o?.name || '').toLowerCase() === actionMode
+  );
+  const hasLogOrReqGroup = opts.some(
+    (o) =>
+      o?.type === 2 &&
+      (String(o?.name || '').toLowerCase() === 'log' ||
+        String(o?.name || '').toLowerCase() === 'request')
+  );
   const hasPunishSub = opts.some(
     (o) =>
       String(o?.name || '').toLowerCase().includes('punish') ||
-      (Array.isArray(o?.options) && o.options.some((so: any) => String(so?.name || '').toLowerCase().includes('punish')))
+      (Array.isArray(o?.options) &&
+        o.options.some((so: any) => String(so?.name || '').toLowerCase().includes('punish')))
   );
 
   let score = 0;
   if (name === 'staff') score += 100;
-  if (hasLogGroup) score += 60;
+  if (hasTargetGroup) score += 75;
+  else if (hasLogOrReqGroup) score += 55;
   if (hasPunishSub) score += 50;
   if (name.includes('staff')) score += 25;
-  if (name.includes('punish') || name === 'log') score += 20;
+  if (name.includes('punish') || name === 'log' || name === 'request') score += 20;
   return score;
 }
 
 async function discoverDiscordStaffCommand(
   cleanToken: string,
   guildId: string,
-  channelId: string
+  channelId: string,
+  actionMode: 'log' | 'request' = 'log'
 ): Promise<DiscoveredCommandInfo> {
   const collectedCommands: any[] = [];
 
@@ -1548,7 +1998,7 @@ async function discoverDiscordStaffCommand(
 
   const uniqueCommands = Array.from(uniqueMap.values());
   const ranked = uniqueCommands
-    .map((c) => ({ cmd: c, score: scoreCommandCandidate(c) }))
+    .map((c) => ({ cmd: c, score: scoreCommandCandidate(c, actionMode) }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score)
     .map((item) => item.cmd);
@@ -1574,6 +2024,7 @@ function formatDiscordErrors(errorsObj: any, prefix = ''): string {
 function buildCommandOptionsFromSchema(
   staffCmd: any,
   params: {
+    actionMode?: 'log' | 'request';
     punishmentType: string;
     duration: string;
     evidenceLinks: string;
@@ -1582,6 +2033,7 @@ function buildCommandOptionsFromSchema(
     gamemode: string;
   }
 ): any[] {
+  const targetGroupName = params.actionMode === 'request' ? 'request' : 'log';
   const resolveOptionValue = (opt: any): any => {
     const optName = String(opt?.name || '').toLowerCase();
     const isEvidenceOpt =
@@ -1693,22 +2145,28 @@ function buildCommandOptionsFromSchema(
 
   const cmdOptions: any[] = Array.isArray(staffCmd?.options) ? staffCmd.options : [];
 
-  // 1. Exact check for `/staff log punishment` (subcommand group `log` -> subcommand `punishment`)
-  const logGroup =
-    cmdOptions.find((o) => o.type === 2 && String(o.name).toLowerCase() === 'log') ||
+  // 1. Exact check for `/staff <log|request> punishment` (subcommand group `log` or `request` -> subcommand `punishment`)
+  const targetGroup =
+    cmdOptions.find((o) => o.type === 2 && String(o.name).toLowerCase() === targetGroupName) ||
+    cmdOptions.find((o) => o.type === 2 && String(o.name).toLowerCase().includes(targetGroupName)) ||
     cmdOptions.find((o) => o.type === 2);
-  if (logGroup && Array.isArray(logGroup.options)) {
+  if (targetGroup && Array.isArray(targetGroup.options)) {
     const punishSub =
-      logGroup.options.find((o: any) => o.type === 1 && String(o.name).toLowerCase() === 'punishment') ||
-      logGroup.options.find((o: any) => o.type === 1 && String(o.name).toLowerCase().includes('punish')) ||
-      logGroup.options.find((o: any) => o.type === 1) ||
-      logGroup.options[0];
+      targetGroup.options.find((o: any) => o.type === 1 && String(o.name).toLowerCase() === 'punishment') ||
+      targetGroup.options.find((o: any) => o.type === 1 && String(o.name).toLowerCase().includes('punish')) ||
+      targetGroup.options.find((o: any) => o.type === 1) ||
+      targetGroup.options[0];
     if (punishSub) {
       const subLeafs = Array.isArray(punishSub.options) ? mapLeafOptions(punishSub.options) : [];
       return [
         {
           type: 2,
-          name: logGroup.name,
+          name:
+            String(targetGroup.name).toLowerCase() === 'log' && targetGroupName === 'request'
+              ? cmdOptions.some((o) => o.type === 2 && String(o.name).toLowerCase() === 'request')
+                ? 'request'
+                : 'request'
+              : targetGroup.name,
           options: [
             {
               type: 1,
@@ -1721,13 +2179,19 @@ function buildCommandOptionsFromSchema(
     }
   }
 
-  // 2. Check if command has direct subcommand `log` or `punishment` or `log_punishment` (type 1)
+  // 2. Check if command has direct subcommand `request` or `log` or `punishment` (type 1)
   const directSub =
     cmdOptions.find(
       (o) =>
         o.type === 1 &&
+        String(o.name).toLowerCase().includes(targetGroupName)
+    ) ||
+    cmdOptions.find(
+      (o) =>
+        o.type === 1 &&
         (String(o.name).toLowerCase().includes('punish') || String(o.name).toLowerCase().includes('log'))
-    ) || cmdOptions.find((o) => o.type === 1);
+    ) ||
+    cmdOptions.find((o) => o.type === 1);
   if (directSub) {
     const subLeafs = Array.isArray(directSub.options) ? mapLeafOptions(directSub.options) : [];
     return [
@@ -1744,11 +2208,11 @@ function buildCommandOptionsFromSchema(
     return mapLeafOptions(cmdOptions);
   }
 
-  // Fallback to standard `/staff log punishment` structure
+  // Fallback to standard `/staff <log|request> punishment` structure
   return [
     {
       type: 2,
-      name: 'log',
+      name: targetGroupName,
       options: [
         {
           type: 1,
@@ -1767,6 +2231,7 @@ function buildCommandOptionsFromSchema(
 async function executeDiscordStaffLogInteraction(params: {
   token: string;
   staffChannelId: string;
+  actionMode?: 'log' | 'request';
   punishmentType: string;
   duration: string;
   evidenceLinks: string;
@@ -1774,6 +2239,8 @@ async function executeDiscordStaffLogInteraction(params: {
   reason: string;
   gamemode: string;
 }): Promise<{ ok: boolean; detail: string }> {
+  const actionMode: 'log' | 'request' = params.actionMode === 'request' ? 'request' : 'log';
+  const slashLabel = `/staff ${actionMode} punishment`;
   const cleanToken = params.token.trim().replace(/^bot\s+/i, '');
   const rawChan = params.staffChannelId.trim();
   const snowflakes = rawChan.match(/\d{15,22}/g);
@@ -1796,7 +2263,12 @@ async function executeDiscordStaffLogInteraction(params: {
   }
 
   // 2. Discover all candidate /staff commands in the guild/channel
-  const { candidates, allCommandNames } = await discoverDiscordStaffCommand(cleanToken, guildId, channelId);
+  const { candidates, allCommandNames } = await discoverDiscordStaffCommand(
+    cleanToken,
+    guildId,
+    channelId,
+    actionMode
+  );
 
   if (candidates.length === 0) {
     const foundHint =
@@ -1833,7 +2305,7 @@ async function executeDiscordStaffLogInteraction(params: {
       finish({
         ok: false,
         detail: interactionSent
-          ? `Step 1 (/staff log punishment) was accepted in ${chanName}, but timed out waiting for the Step 2 modal popup from the bot. Check if ${chanName} allows slash commands.`
+          ? `Step 1 (${slashLabel}) was accepted in ${chanName}, but timed out waiting for the Step 2 modal popup from the bot. Check if ${chanName} allows slash commands.`
           : 'Timed out connecting to Discord Gateway.',
       });
     }, 18000);
@@ -2189,7 +2661,7 @@ async function executeDiscordStaffLogInteraction(params: {
             if (submitOk) {
               finish({
                 ok: true,
-                detail: `2-Step Automation Complete in ${chanName}: Step 1 sent /staff log punishment -> Step 2 caught Modal "${modal.title || 'Punishment'}" & submitted (${filledSummary.join(', ')})!`,
+                detail: `2-Step Automation Complete in ${chanName}: Step 1 sent ${slashLabel} -> Step 2 caught Modal "${modal.title || 'Punishment'}" & submitted (${filledSummary.join(', ')})!`,
               });
             } else {
               const rawSchemaPreview = JSON.stringify(modal.components).slice(0, 320);
@@ -2324,6 +2796,7 @@ export async function startServer(customPort?: number): Promise<number> {
     try {
       const {
         message_id,
+        staff_action_mode = 'log',
         username,
         punishment_type,
         duration,
@@ -2344,12 +2817,19 @@ export async function startServer(customPort?: number): Promise<number> {
         return;
       }
 
+      const cleanActionMode: 'log' | 'request' = staff_action_mode === 'request' ? 'request' : 'log';
       const id = nextPunishmentId++;
-      const caseId = `CASE-${String(id).padStart(4, '0')}`;
-      const commandString = `/staff log punishment punishment_type:${punishment_type} duration:${duration} evidence_links:${evidence_links}`;
+      const caseId =
+        cleanActionMode === 'request'
+          ? `REQ-${String(id).padStart(4, '0')}`
+          : `CASE-${String(id).padStart(4, '0')}`;
+      const commandString = `/staff ${cleanActionMode} punishment punishment_type:${punishment_type} duration:${duration} evidence_links:${evidence_links}`;
 
       let discordStatus: 'logged_locally' | 'sent_to_discord' | 'failed' = 'logged_locally';
-      let discordDetail = 'Saved to Punishment Log.';
+      let discordDetail =
+        cleanActionMode === 'request'
+          ? 'Saved to Punishment Request Ledger.'
+          : 'Saved to Punishment Log.';
 
       if (auto_send_discord) {
         if (!token || !staff_channel_id) {
@@ -2359,6 +2839,7 @@ export async function startServer(customPort?: number): Promise<number> {
           const dispatchRes = await executeDiscordStaffLogInteraction({
             token: String(token),
             staffChannelId: String(staff_channel_id),
+            actionMode: cleanActionMode,
             punishmentType: String(punishment_type),
             duration: String(duration),
             evidenceLinks: String(evidence_links),
@@ -2377,7 +2858,7 @@ export async function startServer(customPort?: number): Promise<number> {
           parserManager.updateMessageAction(
             message_id,
             'confirmed',
-            `[${caseId}] ${punishment_type} (${duration}) - ${reason} [${gamemode}]`
+            `[${caseId}] (${cleanActionMode.toUpperCase()}) ${punishment_type} (${duration}) - ${reason} [${gamemode}]`
           );
         } catch {
           // ignore if message not in current session
@@ -2389,6 +2870,7 @@ export async function startServer(customPort?: number): Promise<number> {
         case_id: caseId,
         created_at: new Date().toISOString().replace('T', ' ').slice(0, 19),
         message_id: typeof message_id === 'number' ? message_id : undefined,
+        staff_action_mode: cleanActionMode,
         username: String(username),
         punishment_type: String(punishment_type),
         duration: String(duration),
@@ -2435,9 +2917,392 @@ export async function startServer(customPort?: number): Promise<number> {
     res.json({ status: 'stopping', fetched: discordFetchJob.fetched });
   });
 
+  // ==========================================
+  // SMART SCAN MEMORY CACHE ENDPOINTS
+  // ==========================================
+  app.get('/api/v1/cache/channels', (_req, res) => {
+    const list = Array.from(channelMemoryCache.values())
+      .map((rec) => ({
+        channel_id: rec.channel_id,
+        channel_name: rec.channel_name,
+        guild_id: rec.guild_id,
+        detected_gamemode: rec.detected_gamemode || inferGamemodeFromChannel(rec.channel_name),
+        cached_messages_count: rec.cached_summary.cached_messages_count,
+        flagged_messages_count: rec.cached_summary.flagged_messages_count,
+        critical_severity_count: rec.cached_summary.critical_severity_count,
+        high_severity_count: rec.cached_summary.high_severity_count,
+        newest_message_id: rec.newest_message_id,
+        last_synced_at: rec.last_synced_at,
+      }))
+      .sort((a, b) => b.last_synced_at.localeCompare(a.last_synced_at));
+    res.json(list);
+  });
+
+  app.post('/api/v1/cache/channels/:channelId/load', (req, res) => {
+    const { channelId } = req.params;
+    const cached = channelMemoryCache.get(channelId);
+    if (!cached || !cached.raw_discord_messages.length) {
+      res.status(404).json({ detail: `No saved scan memory found for channel ${channelId}.` });
+      return;
+    }
+
+    const result = processDiscordMessagesArray(
+      cached.channel_name,
+      cached.raw_discord_messages,
+      cached.guild_id,
+      cached.channel_id
+    );
+    result.cache_metadata = {
+      cache_hit: true,
+      cached_messages_reused: cached.raw_discord_messages.length,
+      newly_scanned_messages: 0,
+      total_cached_in_channel: cached.raw_discord_messages.length,
+      last_synced_at: cached.last_synced_at,
+    };
+    res.json(result);
+  });
+
+  app.delete('/api/v1/cache/channels/:channelId', (req, res) => {
+    const { channelId } = req.params;
+    if (channelId === 'all') {
+      for (const k of Array.from(channelMemoryCache.keys())) {
+        deleteChannelMemory(k);
+      }
+      res.json({ cleared: 'all' });
+      return;
+    }
+    deleteChannelMemory(channelId);
+    res.json({ deleted: channelId });
+  });
+
+  // ==========================================
+  // LIVE CHAT MODERATION RADAR ENDPOINTS (MULTI-CHANNEL + SINGLE-CHANNEL)
+  // ==========================================
+  const getLiveStatusPayload = () => {
+    const workingCount = liveMonitor.monitored_channels.filter((c) => c.status === 'working').length;
+    return {
+      running: liveMonitor.running,
+      mode: liveMonitor.mode,
+      channel_id: liveMonitor.channel_id,
+      channel_name: liveMonitor.channel_name,
+      guild_id: liveMonitor.guild_id,
+      monitored_channels: liveMonitor.monitored_channels,
+      working_channels_count: workingCount,
+      poll_interval_ms: liveMonitor.poll_interval_ms,
+      started_at: liveMonitor.started_at,
+      last_polled_at: liveMonitor.last_polled_at,
+      total_seen_live: liveMonitor.total_seen_live,
+      total_flagged_live: liveMonitor.total_flagged_live,
+      error: liveMonitor.error,
+      recent_messages: liveMonitor.recent_messages,
+      active_alerts: liveMonitor.active_alerts,
+    };
+  };
+
+  app.get('/api/v1/live/status', (_req, res) => {
+    res.json(getLiveStatusPayload());
+  });
+
+  app.post('/api/v1/live/start', async (req, res) => {
+    const {
+      token,
+      channel_id,
+      channel_ids,
+      mode = 'all',
+      poll_interval_ms = 4000,
+    } = req.body || {};
+    const cleanToken = String(token || sessionState.token || '').trim();
+    const isAllMode = mode === 'all' || channel_id === 'all' || (Array.isArray(channel_ids) && channel_ids.length > 1);
+
+    if (liveMonitor.timer) {
+      clearInterval(liveMonitor.timer);
+      liveMonitor.timer = null;
+    }
+
+    // Determine target channel IDs to monitor
+    let rawTargets: string[] = [];
+    if (Array.isArray(channel_ids) && channel_ids.length > 0) {
+      rawTargets = channel_ids.map((id) => String(id).trim()).filter(Boolean);
+    } else if (isAllMode) {
+      const presetIds = sessionState.preset_channels.map((p) => p.channel_id);
+      const cachedIds = Array.from(channelMemoryCache.keys());
+      rawTargets = Array.from(new Set([...presetIds, ...cachedIds]));
+    } else {
+      const rawChannel = String(channel_id || sessionState.selected_channel_id || '').trim();
+      const snowflakes = rawChannel.match(/\d{15,22}/g);
+      const extracted = snowflakes ? snowflakes[snowflakes.length - 1] : rawChannel;
+      if (extracted) rawTargets = [extracted];
+    }
+
+    if (rawTargets.length === 0) {
+      res.status(400).json({ detail: 'At least one Channel ID is required to start Live Chat Moderation.' });
+      return;
+    }
+
+    // Try fetching guild channels map first if token is provided so we get clean #names in 1 request
+    const guildChannelNameMap = new Map<string, { name: string; guild_id: string }>();
+    if (cleanToken) {
+      try {
+        const gRes = await fetchDiscordWithToken(
+          'https://discord.com/api/v10/guilds/1250416860000817162/channels',
+          cleanToken
+        );
+        if (gRes.ok) {
+          const gChans: any[] = await gRes.json();
+          if (Array.isArray(gChans)) {
+            for (const gc of gChans) {
+              if (gc?.id && gc?.name) {
+                guildChannelNameMap.set(String(gc.id), {
+                  name: `#${gc.name}`,
+                  guild_id: String(gc.guild_id || '1250416860000817162'),
+                });
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    const newMonitoredList: MonitoredChannelLiveState[] = [];
+
+    for (const rawId of rawTargets) {
+      const snowflakes = rawId.match(/\d{15,22}/g);
+      const cid = snowflakes ? snowflakes[snowflakes.length - 1] : rawId;
+      const presetMatch = sessionState.preset_channels.find((p) => p.channel_id === cid);
+      const cachedMatch = channelMemoryCache.get(cid);
+      const fb = DEFAULT_FALLBACK_GAMEMODES[cid];
+      const existingMon = liveMonitor.monitored_channels.find((m) => m.channel_id === cid);
+
+      let chanName =
+        guildChannelNameMap.get(cid)?.name ||
+        (presetMatch?.name && !presetMatch.name.startsWith('Channel ') ? presetMatch.name : '') ||
+        cachedMatch?.channel_name ||
+        fb?.label ||
+        presetMatch?.name ||
+        `#channel-${cid}`;
+      let guildId =
+        guildChannelNameMap.get(cid)?.guild_id ||
+        presetMatch?.guild_id ||
+        cachedMatch?.guild_id ||
+        '1250416860000817162';
+      let status: MonitoredChannelLiveState['status'] = cleanToken ? 'working' : 'working';
+      let statusDetail = cleanToken ? 'Ready to poll' : 'Simulation / Ready Mode';
+
+      if (cleanToken && !guildChannelNameMap.has(cid)) {
+        try {
+          const cRes = await fetchDiscordWithToken(
+            `https://discord.com/api/v10/channels/${cid}`,
+            cleanToken
+          );
+          if (cRes.ok) {
+            const cData: any = await cRes.json();
+            if (cData?.name) chanName = `#${cData.name}`;
+            if (cData?.guild_id) guildId = String(cData.guild_id);
+            status = 'working';
+            statusDetail = 'Verified & working';
+          } else if (cRes.status === 403 || cRes.status === 404 || cRes.status === 401) {
+            status = 'unreachable';
+            statusDetail = `HTTP ${cRes.status} (No access or invalid channel)`;
+          }
+        } catch {
+          // keep working so pollSingleChannelInMonitor can try
+        }
+      }
+
+      const detectedGamemode =
+        inferGamemodeFromChannel(chanName) !== 'SMP'
+          ? inferGamemodeFromChannel(chanName)
+          : fb?.gamemode || cachedMatch?.detected_gamemode || 'SMP';
+
+      newMonitoredList.push({
+        channel_id: cid,
+        channel_name: chanName,
+        guild_id: guildId,
+        detected_gamemode: detectedGamemode,
+        status,
+        status_detail: statusDetail,
+        last_message_id: existingMon?.last_message_id || '',
+        last_polled_at: existingMon?.last_polled_at || null,
+        messages_seen: existingMon?.messages_seen || 0,
+        flags_detected: existingMon?.flags_detected || 0,
+      });
+    }
+
+    liveMonitor.running = true;
+    liveMonitor.mode = isAllMode ? 'all' : 'single';
+    liveMonitor.token = cleanToken;
+    liveMonitor.monitored_channels = newMonitoredList;
+    liveMonitor.channel_id = isAllMode ? 'all' : newMonitoredList[0].channel_id;
+    liveMonitor.channel_name = isAllMode
+      ? `All Working Channels (${newMonitoredList.filter((c) => c.status !== 'unreachable').length}/${newMonitoredList.length})`
+      : newMonitoredList[0].channel_name;
+    liveMonitor.guild_id = newMonitoredList[0]?.guild_id || '1250416860000817162';
+    liveMonitor.poll_interval_ms = Math.max(2500, Math.min(30000, Number(poll_interval_ms) || 4000));
+    liveMonitor.started_at = new Date().toISOString().replace('T', ' ').slice(11, 19);
+    liveMonitor.error = null;
+
+    if (cleanToken) {
+      await pollLiveDiscordChannelOnce();
+      const workingCountAfterPoll = liveMonitor.monitored_channels.filter(
+        (c) => c.status === 'working'
+      ).length;
+      if (isAllMode) {
+        liveMonitor.channel_name = `All Working Channels (${workingCountAfterPoll}/${liveMonitor.monitored_channels.length} Active)`;
+      }
+      liveMonitor.timer = setInterval(() => {
+        pollLiveDiscordChannelOnce();
+      }, liveMonitor.poll_interval_ms);
+    }
+
+    res.json(getLiveStatusPayload());
+  });
+
+  app.post('/api/v1/live/stop', (_req, res) => {
+    liveMonitor.running = false;
+    if (liveMonitor.timer) {
+      clearInterval(liveMonitor.timer);
+      liveMonitor.timer = null;
+    }
+    res.json(getLiveStatusPayload());
+  });
+
+  app.post('/api/v1/live/clear-alerts', (_req, res) => {
+    liveMonitor.active_alerts = [];
+    liveMonitor.recent_messages = [];
+    liveMonitor.total_seen_live = 0;
+    liveMonitor.total_flagged_live = 0;
+    for (const ch of liveMonitor.monitored_channels) {
+      ch.messages_seen = 0;
+      ch.flags_detected = 0;
+    }
+    res.json(getLiveStatusPayload());
+  });
+
+  app.post('/api/v1/live/simulate', (req, res) => {
+    const customMsg = req.body?.message;
+    const customPlayer = req.body?.player;
+    const targetChannelId = req.body?.channel_id;
+    const multiChannelBurst = Boolean(req.body?.multi_channel_burst);
+
+    const SIMULATION_SAMPLES = [
+      { player: 'VortexPvP_', message: 'kys noob i will leak your ip and swat you right now' },
+      { player: 'xX_Slayer_Xx', message: 'Join my duping discord right now discord.gg/freedupes or connect at 198.51.100.42:25565' },
+      { player: 'DiamondMiner12', message: 'Anyone trading mending books at spawn?' },
+      { player: 'ToxicKing99', message: 'you are a fucking idiot stfu worthless trash player' },
+      { player: 'BuilderAlex', message: 'GG nice duel at warp arena!' },
+      { player: 'ShadowRaider', message: 'ADMIN HELP SOMEONE IS GRIEFING SPAWN RIGHT NOW!!!!' },
+      { player: 'NetherLord_', message: 'nobody wants you here delete your account loser' },
+      { player: 'CrystalKnight', message: 'f.u.c.k you stupid r3tard get doxxed' },
+      { player: 'SkyTrader99', message: 'Selling 64x enchanted golden apples at /ah SkyTrader99' },
+    ];
+
+    if (!liveMonitor.monitored_channels || liveMonitor.monitored_channels.length === 0) {
+      liveMonitor.monitored_channels = buildInitialMonitoredChannelsList();
+    }
+
+    const workingPool = liveMonitor.monitored_channels.filter((c) => c.status !== 'unreachable');
+    const channelPool = workingPool.length > 0 ? workingPool : liveMonitor.monitored_channels;
+
+    const nowTs = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const nowShort = new Date().toISOString().replace('T', ' ').slice(11, 19);
+    liveMonitor.last_polled_at = nowShort;
+
+    // If multi_channel_burst is true, simulate messages across all channels at once!
+    if (multiChannelBurst) {
+      const generatedItems: LiveFeedAlertItem[] = [];
+      for (const ch of channelPool) {
+        ch.status = 'working';
+        ch.last_polled_at = nowShort;
+        const sample = SIMULATION_SAMPLES[Math.floor(Math.random() * SIMULATION_SAMPLES.length)];
+        const fakeDiscordId = String(Date.now() * 1000000 + Math.floor(Math.random() * 999999));
+        const item = evaluateSingleLiveLine(
+          fakeDiscordId,
+          ch.channel_id,
+          ch.channel_name,
+          ch.guild_id || '1250416860000817162',
+          nowTs,
+          sample.player,
+          sample.message,
+          ch.detected_gamemode
+        );
+        ch.messages_seen++;
+        liveMonitor.total_seen_live++;
+        liveMonitor.recent_messages.unshift(item);
+        if (item.is_flagged) {
+          ch.flags_detected++;
+          liveMonitor.total_flagged_live++;
+          liveMonitor.active_alerts.unshift(item);
+        }
+        generatedItems.push(item);
+      }
+      if (liveMonitor.recent_messages.length > 250) liveMonitor.recent_messages.length = 250;
+      if (liveMonitor.active_alerts.length > 150) liveMonitor.active_alerts.length = 150;
+      res.json({ burst_count: generatedItems.length, items: generatedItems, status: getLiveStatusPayload() });
+      return;
+    }
+
+    const chosen =
+      customMsg && customPlayer
+        ? { player: String(customPlayer), message: String(customMsg) }
+        : SIMULATION_SAMPLES[Math.floor(Math.random() * SIMULATION_SAMPLES.length)];
+
+    let targetChan =
+      targetChannelId && targetChannelId !== 'all'
+        ? channelPool.find((c) => c.channel_id === targetChannelId)
+        : undefined;
+    if (!targetChan) {
+      targetChan = channelPool[Math.floor(Math.random() * channelPool.length)];
+    }
+
+    const chanId = targetChan?.channel_id || sessionState.selected_channel_id || '1473478972816752650';
+    const chanName = targetChan?.channel_name || '#survival-chat';
+    const chanGm = targetChan?.detected_gamemode || 'Survival';
+
+    if (targetChan) {
+      targetChan.status = 'working';
+      targetChan.last_polled_at = nowShort;
+      targetChan.messages_seen++;
+    }
+
+    const fakeDiscordId = String(Date.now() * 1000000 + Math.floor(Math.random() * 999999));
+
+    const item = evaluateSingleLiveLine(
+      fakeDiscordId,
+      chanId,
+      chanName,
+      targetChan?.guild_id || liveMonitor.guild_id || '1250416860000817162',
+      nowTs,
+      chosen.player,
+      chosen.message,
+      chanGm
+    );
+
+    liveMonitor.total_seen_live++;
+    liveMonitor.recent_messages.unshift(item);
+    if (liveMonitor.recent_messages.length > 250) liveMonitor.recent_messages.length = 250;
+
+    if (item.is_flagged) {
+      if (targetChan) targetChan.flags_detected++;
+      liveMonitor.total_flagged_live++;
+      liveMonitor.active_alerts.unshift(item);
+      if (liveMonitor.active_alerts.length > 150) liveMonitor.active_alerts.length = 150;
+    }
+
+    res.json(item);
+  });
+
   app.post('/api/v1/discord/fetch', async (req, res) => {
     try {
-      const { token, channel_id, limit = 25000, async_mode = false } = req.body || {};
+      const {
+        token,
+        channel_id,
+        limit = 25000,
+        async_mode = false,
+        use_cache = true,
+        force_rescan = false,
+      } = req.body || {};
       if (!token || !String(token).trim()) {
         res.status(400).json({ detail: 'Discord Token is required.' });
         return;
@@ -2491,6 +3356,13 @@ export async function startServer(customPort?: number): Promise<number> {
       }
       saveSessionState();
 
+      // Check Smart Scan Memory Cache for this channel
+      const existingCache =
+        use_cache && !force_rescan ? channelMemoryCache.get(extractedChannelId) : undefined;
+      const cachedIdSet = new Set<string>(
+        existingCache ? existingCache.raw_discord_messages.map((m: any) => String(m.id)) : []
+      );
+
       // Fetch first batch immediately to validate token and channel access
       const firstBatchSize = Math.min(100, maxMessages);
       const firstUrl = `https://discord.com/api/v10/channels/${extractedChannelId}/messages?limit=${firstBatchSize}`;
@@ -2506,36 +3378,99 @@ export async function startServer(customPort?: number): Promise<number> {
       }
 
       const firstBatch: any[] = await firstRes.json();
-      const allDiscordMessages: any[] = Array.isArray(firstBatch) ? [...firstBatch] : [];
+      const newDiscordMessages: any[] = [];
+      let hitCachedBoundary = false;
 
-      // If everything fits in first batch or synchronous mode requested for small fetch
-      if (!async_mode || allDiscordMessages.length >= maxMessages || allDiscordMessages.length < firstBatchSize) {
-        let beforeId = allDiscordMessages[allDiscordMessages.length - 1]?.id;
-        while (!async_mode && allDiscordMessages.length < maxMessages && beforeId) {
-          const batchSize = Math.min(100, maxMessages - allDiscordMessages.length);
+      if (Array.isArray(firstBatch)) {
+        for (const msg of firstBatch) {
+          if (cachedIdSet.has(String(msg.id))) {
+            hitCachedBoundary = true;
+            break;
+          }
+          newDiscordMessages.push(msg);
+        }
+      }
+
+      // Helper to merge newly fetched messages with cached messages, persist to Smart Memory Vault, and evaluate
+      const finalizeAndStoreWithMemory = (newlyFetched: any[]): LogParseResponse => {
+        const reusedFromCache = existingCache ? existingCache.raw_discord_messages : [];
+        const combinedRaw = [...newlyFetched, ...reusedFromCache].slice(0, Math.max(maxMessages, reusedFromCache.length));
+        const syncedAt = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+        const finalResult = processDiscordMessagesArray(
+          channelName,
+          combinedRaw.slice(0, maxMessages),
+          extractedGuildId,
+          extractedChannelId
+        );
+
+        const cacheRecord: ChannelMemoryCacheRecord = {
+          channel_id: extractedChannelId,
+          channel_name: channelName,
+          guild_id: extractedGuildId,
+          detected_gamemode: finalResult.detected_gamemode,
+          last_synced_at: syncedAt,
+          newest_message_id: combinedRaw[0]?.id ? String(combinedRaw[0].id) : undefined,
+          raw_discord_messages: combinedRaw,
+          cached_summary: {
+            cached_messages_count: combinedRaw.length,
+            flagged_messages_count: finalResult.flagged_messages_count,
+            critical_severity_count: finalResult.critical_severity_count,
+            high_severity_count: finalResult.high_severity_count,
+          },
+        };
+        saveChannelMemoryToDisk(cacheRecord);
+
+        finalResult.cache_metadata = {
+          cache_hit: Boolean(existingCache && reusedFromCache.length > 0),
+          cached_messages_reused: reusedFromCache.length,
+          newly_scanned_messages: newlyFetched.length,
+          total_cached_in_channel: combinedRaw.length,
+          last_synced_at: syncedAt,
+        };
+        return finalResult;
+      };
+
+      // If we hit the cached message boundary in the very first batch (and cache already satisfies limit or has history), return immediately without re-scanning old pages!
+      if (
+        (hitCachedBoundary && existingCache && existingCache.raw_discord_messages.length > 0) ||
+        !async_mode ||
+        newDiscordMessages.length >= maxMessages ||
+        firstBatch.length < firstBatchSize
+      ) {
+        let beforeId = firstBatch[firstBatch.length - 1]?.id;
+        while (
+          !hitCachedBoundary &&
+          !async_mode &&
+          newDiscordMessages.length < maxMessages &&
+          beforeId
+        ) {
+          const batchSize = Math.min(100, maxMessages - newDiscordMessages.length);
           const query = new URLSearchParams({ limit: String(batchSize), before: beforeId });
           const msgUrl = `https://discord.com/api/v10/channels/${extractedChannelId}/messages?${query.toString()}`;
           const msgRes = await fetchDiscordWithToken(msgUrl, String(token));
           if (!msgRes.ok) break;
           const batch: any[] = await msgRes.json();
           if (!Array.isArray(batch) || batch.length === 0) break;
-          allDiscordMessages.push(...batch);
+          for (const m of batch) {
+            if (cachedIdSet.has(String(m.id))) {
+              hitCachedBoundary = true;
+              break;
+            }
+            newDiscordMessages.push(m);
+          }
           beforeId = batch[batch.length - 1]?.id;
           if (batch.length < batchSize) break;
         }
-        const finalResult = processDiscordMessagesArray(
-          channelName,
-          allDiscordMessages,
-          extractedGuildId,
-          extractedChannelId
-        );
+
+        const finalResult = finalizeAndStoreWithMemory(newDiscordMessages);
         res.json(finalResult);
         return;
       }
 
-      // Start background pagination for large message limits (up to 100,000+)
+      // Start background pagination for large message limits (stops automatically as soon as it reaches cached memory!)
       discordFetchJob.status = 'fetching';
-      discordFetchJob.fetched = allDiscordMessages.length;
+      discordFetchJob.fetched = newDiscordMessages.length + (existingCache?.raw_discord_messages.length || 0);
       discordFetchJob.target = maxMessages;
       discordFetchJob.channelName = channelName;
       discordFetchJob.rateLimitWaitMs = 0;
@@ -2546,7 +3481,7 @@ export async function startServer(customPort?: number): Promise<number> {
       res.json({
         async_job: true,
         status: 'fetching',
-        fetched: allDiscordMessages.length,
+        fetched: discordFetchJob.fetched,
         target: maxMessages,
         channel_name: channelName,
       });
@@ -2554,13 +3489,16 @@ export async function startServer(customPort?: number): Promise<number> {
       // Background pagination task
       (async () => {
         try {
-          let beforeId = allDiscordMessages[allDiscordMessages.length - 1]?.id;
+          let beforeId = firstBatch[firstBatch.length - 1]?.id;
           while (
-            allDiscordMessages.length < maxMessages &&
+            !hitCachedBoundary &&
+            newDiscordMessages.length + (existingCache?.raw_discord_messages.length || 0) < maxMessages &&
             beforeId &&
             !discordFetchJob.stopRequested
           ) {
-            const batchSize = Math.min(100, maxMessages - allDiscordMessages.length);
+            const remainingNeeded =
+              maxMessages - (newDiscordMessages.length + (existingCache?.raw_discord_messages.length || 0));
+            const batchSize = Math.min(100, Math.max(1, remainingNeeded));
             const query = new URLSearchParams({ limit: String(batchSize), before: beforeId });
             const msgUrl = `https://discord.com/api/v10/channels/${extractedChannelId}/messages?${query.toString()}`;
 
@@ -2569,8 +3507,7 @@ export async function startServer(customPort?: number): Promise<number> {
             });
 
             if (!msgRes.ok) {
-              // If an intermediate batch errors after collecting messages, analyze what we have so far
-              if (allDiscordMessages.length > 0) break;
+              if (newDiscordMessages.length > 0 || (existingCache?.raw_discord_messages.length || 0) > 0) break;
               const errBody: any = await msgRes.json().catch(() => ({}));
               throw new Error(errBody?.message || `Discord API Error ${msgRes.status}`);
             }
@@ -2578,19 +3515,22 @@ export async function startServer(customPort?: number): Promise<number> {
             const batch: any[] = await msgRes.json();
             if (!Array.isArray(batch) || batch.length === 0) break;
 
-            allDiscordMessages.push(...batch);
-            discordFetchJob.fetched = allDiscordMessages.length;
+            for (const m of batch) {
+              if (cachedIdSet.has(String(m.id))) {
+                hitCachedBoundary = true;
+                break;
+              }
+              newDiscordMessages.push(m);
+            }
+
+            discordFetchJob.fetched =
+              newDiscordMessages.length + (existingCache?.raw_discord_messages.length || 0);
             beforeId = batch[batch.length - 1]?.id;
             if (batch.length < batchSize) break;
           }
 
           discordFetchJob.status = 'analyzing';
-          const finalResult = processDiscordMessagesArray(
-            channelName,
-            allDiscordMessages,
-            extractedGuildId,
-            extractedChannelId
-          );
+          const finalResult = finalizeAndStoreWithMemory(newDiscordMessages);
           discordFetchJob.result = finalResult;
           discordFetchJob.status = 'completed';
         } catch (bgErr: any) {

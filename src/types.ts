@@ -78,6 +78,14 @@ export interface ParseErrorRecord {
   reason: string;
 }
 
+export interface CacheHitMetadata {
+  cache_hit: boolean;
+  cached_messages_reused: number;
+  newly_scanned_messages: number;
+  total_cached_in_channel: number;
+  last_synced_at: string;
+}
+
 export interface LogParseResponse {
   file_name: string;
   file_size_bytes: number;
@@ -97,6 +105,73 @@ export interface LogParseResponse {
   category_breakdown: Record<string, number>;
   player_profiles: Record<string, PlayerProfile>;
   messages_preview: MessageRecord[];
+  cache_metadata?: CacheHitMetadata;
+}
+
+export interface ChannelCacheSummary {
+  channel_id: string;
+  channel_name: string;
+  guild_id?: string;
+  detected_gamemode?: string;
+  cached_messages_count: number;
+  flagged_messages_count: number;
+  critical_severity_count: number;
+  high_severity_count: number;
+  newest_message_id?: string;
+  last_synced_at: string;
+}
+
+export interface LiveFeedAlertItem {
+  id: string;
+  discord_message_id: string;
+  channel_id: string;
+  channel_name: string;
+  guild_id?: string;
+  detected_gamemode?: string;
+  timestamp: string;
+  received_at: string;
+  player: string;
+  message: string;
+  discord_message_url?: string;
+  is_flagged: boolean;
+  severity: 'none' | 'low' | 'medium' | 'high' | 'critical';
+  confidence: number;
+  overall_score: number;
+  primary_category: string;
+  categories: string[];
+  reasons: string[];
+  acknowledged?: boolean;
+}
+
+export interface MonitoredChannelLiveState {
+  channel_id: string;
+  channel_name: string;
+  guild_id?: string;
+  detected_gamemode?: string;
+  status: 'working' | 'standby' | 'rate_limited' | 'unreachable';
+  status_detail?: string;
+  last_message_id: string;
+  last_polled_at: string | null;
+  messages_seen: number;
+  flags_detected: number;
+}
+
+export interface LiveMonitorStatusResponse {
+  running: boolean;
+  mode: 'all' | 'single';
+  channel_id: string;
+  channel_name: string;
+  guild_id?: string;
+  monitored_channels: MonitoredChannelLiveState[];
+  working_channels_count: number;
+  poll_interval_ms: number;
+  started_at: string | null;
+  last_polled_at: string | null;
+  total_seen_live: number;
+  total_flagged_live: number;
+  error: string | null;
+  recent_messages: LiveFeedAlertItem[];
+  active_alerts: LiveFeedAlertItem[];
 }
 
 export interface PunishmentRecord {
@@ -104,6 +179,7 @@ export interface PunishmentRecord {
   case_id: string;
   created_at: string;
   message_id?: number;
+  staff_action_mode?: 'log' | 'request';
   username: string;
   punishment_type: string;
   duration: string;
