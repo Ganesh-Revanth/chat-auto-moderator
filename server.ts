@@ -211,6 +211,42 @@ export interface LogParseResponse {
   player_profiles: Record<string, PlayerProfile>;
   messages_preview: MessageRecord[];
   cache_metadata?: CacheHitMetadata;
+  earliest_timestamp?: string | null;
+  latest_timestamp?: string | null;
+  available_dates?: string[];
+}
+
+export function extractDateString(timestamp: string): string | null {
+  if (!timestamp || timestamp === 'Unknown') return null;
+  // Match standard YYYY-MM-DD
+  const isoMatch = /^(\d{4}-\d{2}-\d{2})/.exec(timestamp);
+  if (isoMatch) return isoMatch[1];
+  // Match DD-MM-YYYY
+  const dmMatch = /^(\d{2})-(\d{2})-(\d{4})/.exec(timestamp);
+  if (dmMatch) return `${dmMatch[3]}-${dmMatch[2]}-${dmMatch[1]}`;
+  // Try Date.parse
+  try {
+    const d = new Date(timestamp);
+    if (!isNaN(d.getTime())) {
+      return d.toISOString().slice(0, 10);
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+export function parseTimestampToMillis(timestamp: string): number | null {
+  if (!timestamp || timestamp === 'Unknown') return null;
+  try {
+    // Try normalized ISO if it has space
+    const isoCandidate = timestamp.includes('T') ? timestamp : timestamp.replace(' ', 'T');
+    const d = new Date(isoCandidate);
+    if (!isNaN(d.getTime())) return d.getTime();
+  } catch {
+    // ignore
+  }
+  return null;
 }
 
 export interface PunishmentRecord {
@@ -1256,6 +1292,31 @@ class ParserManager {
     this.currentProfiles = buildPlayerProfiles(evaluatedMessages);
     const uniquePlayers = Object.keys(this.currentProfiles).sort();
 
+    // Extract dates and timeline range
+    const dateSet = new Set<string>();
+    let earliestTs: string | null = null;
+    let latestTs: string | null = null;
+    let earliestMs = Infinity;
+    let latestMs = -Infinity;
+
+    for (const m of evaluatedMessages) {
+      const dStr = extractDateString(m.timestamp);
+      if (dStr) dateSet.add(dStr);
+      const ms = parseTimestampToMillis(m.timestamp);
+      if (ms !== null) {
+        if (ms < earliestMs) {
+          earliestMs = ms;
+          earliestTs = m.timestamp;
+        }
+        if (ms > latestMs) {
+          latestMs = ms;
+          latestTs = m.timestamp;
+        }
+      }
+    }
+
+    const availableDates = Array.from(dateSet).sort();
+
     return {
       file_name: sourceName,
       file_size_bytes: fileSizeBytes,
@@ -1272,6 +1333,9 @@ class ParserManager {
       category_breakdown: categoryCounts,
       player_profiles: this.currentProfiles,
       messages_preview: evaluatedMessages,
+      earliest_timestamp: earliestTs,
+      latest_timestamp: latestTs,
+      available_dates: availableDates,
     };
   }
 
@@ -3299,6 +3363,8 @@ export async function startServer(customPort?: number): Promise<number> {
         token,
         channel_id,
         limit = 25000,
+        start_date,
+        end_date,
         async_mode = false,
         use_cache = true,
         force_rescan = false,
@@ -3326,6 +3392,9 @@ export async function startServer(customPort?: number): Promise<number> {
 
       const maxMessages = Math.min(100000, Math.max(10, Number(limit) || 25000));
       let channelName = `discord-channel-${extractedChannelId}`;
+
+      const startDateMs = typeof start_date === 'string' && start_date.trim() ? new Date(`${start_date.trim()}T00:00:00Z`).getTime() : null;
+      const endDateMs = typeof end_date === 'string' && end_date.trim() ? new Date(`${end_date.trim()}T23:59:59.999Z`).getTime() : null;
 
       // Save token & selected channel to persistent session state
       sessionState.token = String(token).trim();
@@ -3387,6 +3456,13 @@ export async function startServer(customPort?: number): Promise<number> {
             hitCachedBoundary = true;
             break;
           }
+          if (startDateMs !== null && msg.timestamp) {
+            const mTime = new Date(msg.timestamp).getTime();
+            if (!isNaN(mTime) && mTime < startDateMs) {
+              hitCachedBoundary = true;
+              break;
+            }
+          }
           newDiscordMessages.push(msg);
         }
       }
@@ -3394,7 +3470,18 @@ export async function startServer(customPort?: number): Promise<number> {
       // Helper to merge newly fetched messages with cached messages, persist to Smart Memory Vault, and evaluate
       const finalizeAndStoreWithMemory = (newlyFetched: any[]): LogParseResponse => {
         const reusedFromCache = existingCache ? existingCache.raw_discord_messages : [];
-        const combinedRaw = [...newlyFetched, ...reusedFromCache].slice(0, Math.max(maxMessages, reusedFromCache.length));
+        let combinedRaw = [...newlyFetched, ...reusedFromCache];
+        if (startDateMs !== null || endDateMs !== null) {
+          combinedRaw = combinedRaw.filter((m: any) => {
+            if (!m.timestamp) return true;
+            const t = new Date(m.timestamp).getTime();
+            if (isNaN(t)) return true;
+            if (startDateMs !== null && t < startDateMs) return false;
+            if (endDateMs !== null && t > endDateMs) return false;
+            return true;
+          });
+        }
+        combinedRaw = combinedRaw.slice(0, Math.max(maxMessages, reusedFromCache.length));
         const syncedAt = new Date().toISOString().replace('T', ' ').slice(0, 19);
 
         const finalResult = processDiscordMessagesArray(
@@ -3456,6 +3543,13 @@ export async function startServer(customPort?: number): Promise<number> {
             if (cachedIdSet.has(String(m.id))) {
               hitCachedBoundary = true;
               break;
+            }
+            if (startDateMs !== null && m.timestamp) {
+              const mTime = new Date(m.timestamp).getTime();
+              if (!isNaN(mTime) && mTime < startDateMs) {
+                hitCachedBoundary = true;
+                break;
+              }
             }
             newDiscordMessages.push(m);
           }
@@ -3520,6 +3614,13 @@ export async function startServer(customPort?: number): Promise<number> {
                 hitCachedBoundary = true;
                 break;
               }
+              if (startDateMs !== null && m.timestamp) {
+                const mTime = new Date(m.timestamp).getTime();
+                if (!isNaN(mTime) && mTime < startDateMs) {
+                  hitCachedBoundary = true;
+                  break;
+                }
+              }
               newDiscordMessages.push(m);
             }
 
@@ -3582,6 +3683,8 @@ export async function startServer(customPort?: number): Promise<number> {
     const status = typeof req.query.status === 'string' ? req.query.status : undefined;
     const search = typeof req.query.search === 'string' ? req.query.search : undefined;
     const sortBy = typeof req.query.sort_by === 'string' ? req.query.sort_by : 'severity';
+    const startDate = typeof req.query.start_date === 'string' && req.query.start_date.trim() ? req.query.start_date.trim() : undefined;
+    const endDate = typeof req.query.end_date === 'string' && req.query.end_date.trim() ? req.query.end_date.trim() : undefined;
 
     let msgs = [...parserManager.currentMessages];
 
@@ -3593,6 +3696,39 @@ export async function startServer(customPort?: number): Promise<number> {
     if (search) {
       const q = search.toLowerCase();
       msgs = msgs.filter((m) => m.message.toLowerCase().includes(q) || m.player.toLowerCase().includes(q));
+    }
+
+    if (startDate) {
+      // startDate is YYYY-MM-DD
+      const startMs = new Date(`${startDate}T00:00:00`).getTime();
+      msgs = msgs.filter((m) => {
+        const dStr = extractDateString(m.timestamp);
+        if (dStr) {
+          return dStr >= startDate;
+        }
+        const ms = parseTimestampToMillis(m.timestamp);
+        if (ms !== null) {
+          return ms >= startMs;
+        }
+        // Fallback for timestamps with no full date: if date is filtered, don't drop if start date is today
+        return true;
+      });
+    }
+
+    if (endDate) {
+      // endDate is YYYY-MM-DD
+      const endMs = new Date(`${endDate}T23:59:59.999`).getTime();
+      msgs = msgs.filter((m) => {
+        const dStr = extractDateString(m.timestamp);
+        if (dStr) {
+          return dStr <= endDate;
+        }
+        const ms = parseTimestampToMillis(m.timestamp);
+        if (ms !== null) {
+          return ms <= endMs;
+        }
+        return true;
+      });
     }
 
     const SEVERITY_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, none: 0 };

@@ -106,6 +106,9 @@ export interface LogParseResponse {
   player_profiles: Record<string, PlayerProfile>;
   messages_preview: MessageRecord[];
   cache_metadata?: CacheHitMetadata;
+  earliest_timestamp?: string | null;
+  latest_timestamp?: string | null;
+  available_dates?: string[];
 }
 
 export interface ChannelCacheSummary {

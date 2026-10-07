@@ -15,6 +15,8 @@ import {
   Palette,
   Sparkles,
   Check,
+  Calendar,
+  X,
 } from 'lucide-react';
 import type {
   LogParseResponse,
@@ -682,6 +684,10 @@ export const App: React.FC = () => {
   const [selectedPlayer, setSelectedPlayer] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortBy, setSortBy] = useState<'severity' | 'confidence' | 'line_asc' | 'line_desc'>('severity');
+  const [startDateFilter, setStartDateFilter] = useState<string>('');
+  const [endDateFilter, setEndDateFilter] = useState<string>('');
+  const [todayDateStr] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [past7DateStr] = useState<string>(() => new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10));
 
   // Batch Selection State
   const [selectedMsgIds, setSelectedMsgIds] = useState<number[]>([]);
@@ -710,6 +716,8 @@ export const App: React.FC = () => {
         status?: string;
         search?: string;
         sortBy?: string;
+        startDate?: string;
+        endDate?: string;
       }
     ) => {
       setIsLoadingMessages(true);
@@ -724,6 +732,8 @@ export const App: React.FC = () => {
         if (filters?.status && filters.status !== 'all') params.set('status', filters.status);
         if (filters?.search?.trim()) params.set('search', filters.search.trim());
         if (filters?.sortBy) params.set('sort_by', filters.sortBy);
+        if (filters?.startDate?.trim()) params.set('start_date', filters.startDate.trim());
+        if (filters?.endDate?.trim()) params.set('end_date', filters.endDate.trim());
 
         const res = await fetch(`${API_BASE_URL}/api/v1/messages?${params.toString()}`);
         if (res.ok) {
@@ -753,6 +763,8 @@ export const App: React.FC = () => {
       status: selectedStatus,
       search: searchQuery,
       sortBy,
+      startDate: startDateFilter,
+      endDate: endDateFilter,
     });
   }, [
     data,
@@ -763,6 +775,8 @@ export const App: React.FC = () => {
     selectedStatus,
     searchQuery,
     sortBy,
+    startDateFilter,
+    endDateFilter,
     fetchMessages,
   ]);
 
@@ -778,9 +792,11 @@ export const App: React.FC = () => {
 
     try {
       let url = `${API_BASE_URL}/api/v1/upload`;
-      if (formatHint !== 'auto') {
-        url += `?format_hint=${formatHint}`;
-      }
+      const queryParams = new URLSearchParams();
+      if (formatHint !== 'auto') queryParams.set('format_hint', formatHint);
+      if (startDateFilter?.trim()) queryParams.set('start_date', startDateFilter.trim());
+      if (endDateFilter?.trim()) queryParams.set('end_date', endDateFilter.trim());
+      if (queryParams.toString()) url += `?${queryParams.toString()}`;
 
       const response = await fetch(url, {
         method: 'POST',
@@ -861,6 +877,8 @@ export const App: React.FC = () => {
           token: discordToken.trim(),
           channel_id: targetChannel,
           limit: discordFetchLimit,
+          start_date: startDateFilter?.trim() || undefined,
+          end_date: endDateFilter?.trim() || undefined,
           async_mode: true,
           use_cache: useSmartCache,
           force_rescan: forceRescan,
@@ -931,7 +949,11 @@ export const App: React.FC = () => {
     setData(null);
     setActiveMessage(null);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/v1/sample`);
+      const queryParams = new URLSearchParams();
+      if (startDateFilter?.trim()) queryParams.set('start_date', startDateFilter.trim());
+      if (endDateFilter?.trim()) queryParams.set('end_date', endDateFilter.trim());
+      const queryStr = queryParams.toString() ? `?${queryParams.toString()}` : '';
+      const response = await fetch(`${API_BASE_URL}/api/v1/sample${queryStr}`);
       if (!response.ok) {
         throw new Error(`Failed to load sample: ${response.status}`);
       }
@@ -1858,6 +1880,14 @@ export const App: React.FC = () => {
                       <span>Mode: {data.detected_gamemode}</span>
                     </>
                   )}
+                  {data.earliest_timestamp && (
+                    <>
+                      <span className="metadata-sep">·</span>
+                      <span title="Earliest to latest message timestamp in dataset">
+                        Range: {data.earliest_timestamp} → {data.latest_timestamp || 'Present'}
+                      </span>
+                    </>
+                  )}
                   {data.cache_metadata && (
                     <>
                       <span className="metadata-sep">·</span>
@@ -2120,6 +2150,108 @@ export const App: React.FC = () => {
                     </div>
                   </div>
 
+                  {/* Date Timeline Filter on Initial Ingestion Form */}
+                  <div className="ingestion-date-filter-row">
+                    <div className="date-field-header">
+                      <div className="date-field-title">
+                        <Calendar size={15} style={{ color: startDateFilter ? 'var(--accent-brand)' : 'var(--text-muted)' }} />
+                        <span>Check Messages From Date (Timeline to Present)</span>
+                        <span className="date-hint-badge">
+                          {startDateFilter ? `Active Scope: ${startDateFilter} → ${endDateFilter || 'Present'}` : 'All Available History'}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          className={`cat-filter-btn ${!startDateFilter && !endDateFilter ? 'active' : ''}`}
+                          onClick={() => {
+                            setStartDateFilter('');
+                            setEndDateFilter('');
+                          }}
+                          title="Check all available history without date restriction"
+                        >
+                          All Time
+                        </button>
+                        <button
+                          type="button"
+                          className={`cat-filter-btn ${startDateFilter === todayDateStr && !endDateFilter ? 'active' : ''}`}
+                          onClick={() => {
+                            setStartDateFilter(todayDateStr);
+                            setEndDateFilter('');
+                          }}
+                          title="Check messages from Today to Present"
+                        >
+                          Today
+                        </button>
+                        <button
+                          type="button"
+                          className={`cat-filter-btn ${startDateFilter === past7DateStr && !endDateFilter ? 'active' : ''}`}
+                          onClick={() => {
+                            setStartDateFilter(past7DateStr);
+                            setEndDateFilter('');
+                          }}
+                          title="Check messages from Past 7 Days to Present"
+                        >
+                          Past 7 Days
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="date-inputs-cluster">
+                      <div className="date-filter-box" title="Start date: only analyze messages from this date onwards">
+                        <span className="date-input-prefix">From:</span>
+                        <input
+                          type="date"
+                          className="date-filter-input"
+                          value={startDateFilter}
+                          onChange={(e) => setStartDateFilter(e.target.value)}
+                          title="Filter messages starting from this date"
+                        />
+                        {startDateFilter && (
+                          <button
+                            type="button"
+                            className="date-clear-btn"
+                            onClick={() => setStartDateFilter('')}
+                            title="Clear start date"
+                          >
+                            <X size={12} />
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="date-filter-box" title="End date: defaults to Present if left blank">
+                        <span className="date-input-prefix">To:</span>
+                        <input
+                          type="date"
+                          className="date-filter-input"
+                          value={endDateFilter}
+                          onChange={(e) => setEndDateFilter(e.target.value)}
+                          title="End date (defaults to Present if left blank)"
+                        />
+                        {endDateFilter && (
+                          <button
+                            type="button"
+                            className="date-clear-btn"
+                            onClick={() => setEndDateFilter('')}
+                            title="Clear end date"
+                          >
+                            <X size={12} />
+                          </button>
+                        )}
+                      </div>
+
+                      {startDateFilter ? (
+                        <span className="date-status-pill active">
+                          ● Scanning will check flags from {startDateFilter} to {endDateFilter || 'Present'}
+                        </span>
+                      ) : (
+                        <span className="date-status-pill">
+                          Full historical scan (select a date above to check from that date to present)
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
                   {/* Quick 1-Click Channel Selector Bar */}
                   <div className="channel-switcher-bar">
                     <span className="channel-switcher-label">Preset Channels:</span>
@@ -2278,6 +2410,95 @@ export const App: React.FC = () => {
                     </div>
                   </div>
 
+                  {/* Date Timeline Filter on File Upload Zone */}
+                  <div
+                    className="ingestion-date-filter-row"
+                    style={{ maxWidth: '620px', margin: '0 auto 1.25rem auto', textAlign: 'left' }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="date-field-header">
+                      <div className="date-field-title">
+                        <Calendar size={15} style={{ color: startDateFilter ? 'var(--accent-brand)' : 'var(--text-muted)' }} />
+                        <span>Check From Date</span>
+                        <span className="date-hint-badge">
+                          {startDateFilter ? `Active: ${startDateFilter} → ${endDateFilter || 'Present'}` : 'All File Lines'}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          className={`cat-filter-btn ${!startDateFilter && !endDateFilter ? 'active' : ''}`}
+                          onClick={() => {
+                            setStartDateFilter('');
+                            setEndDateFilter('');
+                          }}
+                        >
+                          All Time
+                        </button>
+                        <button
+                          type="button"
+                          className={`cat-filter-btn ${startDateFilter === todayDateStr && !endDateFilter ? 'active' : ''}`}
+                          onClick={() => {
+                            setStartDateFilter(todayDateStr);
+                            setEndDateFilter('');
+                          }}
+                        >
+                          Today
+                        </button>
+                        <button
+                          type="button"
+                          className={`cat-filter-btn ${startDateFilter === past7DateStr && !endDateFilter ? 'active' : ''}`}
+                          onClick={() => {
+                            setStartDateFilter(past7DateStr);
+                            setEndDateFilter('');
+                          }}
+                        >
+                          Past 7 Days
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="date-inputs-cluster">
+                      <div className="date-filter-box">
+                        <span className="date-input-prefix">From:</span>
+                        <input
+                          type="date"
+                          className="date-filter-input"
+                          value={startDateFilter}
+                          onChange={(e) => setStartDateFilter(e.target.value)}
+                        />
+                        {startDateFilter && (
+                          <button
+                            type="button"
+                            className="date-clear-btn"
+                            onClick={() => setStartDateFilter('')}
+                          >
+                            <X size={12} />
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="date-filter-box">
+                        <span className="date-input-prefix">To:</span>
+                        <input
+                          type="date"
+                          className="date-filter-input"
+                          value={endDateFilter}
+                          onChange={(e) => setEndDateFilter(e.target.value)}
+                        />
+                        {endDateFilter && (
+                          <button
+                            type="button"
+                            className="date-clear-btn"
+                            onClick={() => setEndDateFilter('')}
+                          >
+                            <X size={12} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="upload-actions" onClick={(e) => e.stopPropagation()}>
                     <button
                       type="button"
@@ -2414,107 +2635,109 @@ export const App: React.FC = () => {
         )}
 
         {/* MAIN WORKSPACE */}
-        {data && activeTab !== 'live' && (
+        {activeTab !== 'live' && (
           <>
-            {/* BENTO CATEGORY & TELEMETRY GRID */}
-            <section className="bento-telemetry-grid" id="stats-summary">
-              <div className="bento-card bento-large-2x2" id="stat-flagged">
-                <img
-                  src={currentHeroImg}
-                  alt=""
-                  referrerPolicy="no-referrer"
-                  className="bento-bg-overlay"
-                  onError={(e) => {
-                    e.currentTarget.style.display = 'none';
-                  }}
-                />
-                <div style={{ position: 'relative', zIndex: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap' }}>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', background: 'rgba(255,255,255,0.14)', color: '#f8fafc', padding: '0.22rem 0.6rem', borderRadius: 'var(--radius-xs)' }}>
-                    01 // CRITICAL THREAT MATRIX
-                  </span>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.76rem', fontWeight: 600, color: '#cbd5e1' }}>
-                    {data.file_name} ({data.detected_format.toUpperCase()})
-                  </span>
-                </div>
-
-                <div style={{ position: 'relative', zIndex: 2, margin: '1.15rem 0' }}>
-                  <div style={{ fontFamily: 'var(--font-display)', fontSize: 'clamp(2.3rem, 4vw, 3.6rem)', lineHeight: 0.95, color: '#f8fafc' }} className="glitch-hover">
-                    {data.flagged_messages_count.toLocaleString()} FLAGS
+            {/* BENTO CATEGORY & TELEMETRY GRID (When Data Loaded) */}
+            {data && (
+              <section className="bento-telemetry-grid" id="stats-summary">
+                <div className="bento-card bento-large-2x2" id="stat-flagged">
+                  <img
+                    src={currentHeroImg}
+                    alt=""
+                    referrerPolicy="no-referrer"
+                    className="bento-bg-overlay"
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none';
+                    }}
+                  />
+                  <div style={{ position: 'relative', zIndex: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap' }}>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', background: 'rgba(255,255,255,0.14)', color: '#f8fafc', padding: '0.22rem 0.6rem', borderRadius: 'var(--radius-xs)' }}>
+                      01 // CRITICAL THREAT MATRIX
+                    </span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.76rem', fontWeight: 600, color: '#cbd5e1' }}>
+                      {data.file_name} ({data.detected_format.toUpperCase()})
+                    </span>
                   </div>
-                  <div style={{ fontFamily: 'var(--font-main)', fontSize: '0.9rem', fontWeight: 600, color: '#cbd5e1', marginTop: '0.45rem' }}>
-                    {((data.flagged_messages_count / (data.messages_detected || 1)) * 100).toFixed(1)}% Violation Density · {data.critical_severity_count} Critical · {data.high_severity_count} High
+
+                  <div style={{ position: 'relative', zIndex: 2, margin: '1.15rem 0' }}>
+                    <div style={{ fontFamily: 'var(--font-display)', fontSize: 'clamp(2.3rem, 4vw, 3.6rem)', lineHeight: 0.95, color: '#f8fafc' }} className="glitch-hover">
+                      {data.flagged_messages_count.toLocaleString()} FLAGS
+                    </div>
+                    <div style={{ fontFamily: 'var(--font-main)', fontSize: '0.9rem', fontWeight: 600, color: '#cbd5e1', marginTop: '0.45rem' }}>
+                      {((data.flagged_messages_count / (data.messages_detected || 1)) * 100).toFixed(1)}% Violation Density · {data.critical_severity_count} Critical · {data.high_severity_count} High
+                    </div>
+                  </div>
+
+                  <div style={{ position: 'relative', zIndex: 2, display: 'flex', flexWrap: 'wrap', gap: '0.45rem' }}>
+                    {Object.entries(data.category_breakdown).map(([cat, count]) => (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => {
+                          setSelectedCategory(selectedCategory === cat ? 'all' : cat);
+                          setViewFilter('flagged');
+                          setActiveTab('dashboard');
+                        }}
+                        style={{
+                          background: selectedCategory === cat ? '#f8fafc' : 'rgba(255, 255, 255, 0.12)',
+                          color: selectedCategory === cat ? '#090b0f' : '#f8fafc',
+                          border: '1px solid rgba(255, 255, 255, 0.28)',
+                          borderRadius: 'var(--radius-xs)',
+                          padding: '0.28rem 0.6rem',
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: '0.72rem',
+                          fontWeight: 700,
+                          textTransform: 'uppercase',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {cat.replace('_', ' ')}: {count}
+                      </button>
+                    ))}
                   </div>
                 </div>
 
-                <div style={{ position: 'relative', zIndex: 2, display: 'flex', flexWrap: 'wrap', gap: '0.45rem' }}>
-                  {Object.entries(data.category_breakdown).map(([cat, count]) => (
-                    <button
-                      key={cat}
-                      type="button"
-                      onClick={() => {
-                        setSelectedCategory(selectedCategory === cat ? 'all' : cat);
-                        setViewFilter('flagged');
-                        setActiveTab('dashboard');
-                      }}
-                      style={{
-                        background: selectedCategory === cat ? '#f8fafc' : 'rgba(255, 255, 255, 0.12)',
-                        color: selectedCategory === cat ? '#090b0f' : '#f8fafc',
-                        border: '1px solid rgba(255, 255, 255, 0.28)',
-                        borderRadius: 'var(--radius-xs)',
-                        padding: '0.28rem 0.6rem',
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: '0.72rem',
-                        fontWeight: 700,
-                        textTransform: 'uppercase',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {cat.replace('_', ' ')}: {count}
-                    </button>
-                  ))}
+                <div className="bento-card bento-acid">
+                  <div className="stat-label">
+                    <span>HIGH / CRITICAL PRIORITY</span>
+                  </div>
+                  <div className="stat-value">
+                    {(data.critical_severity_count + data.high_severity_count).toLocaleString()}
+                  </div>
+                  <div className="stat-subtext">
+                    {data.critical_severity_count} CRIT · {data.high_severity_count} HIGH
+                  </div>
                 </div>
-              </div>
 
-              <div className="bento-card bento-acid">
-                <div className="stat-label">
-                  <span>HIGH / CRITICAL PRIORITY</span>
+                <div className="bento-card" id="stat-messages">
+                  <div className="stat-label">
+                    <span>MESSAGES ANALYZED</span>
+                  </div>
+                  <div className="stat-value">{data.messages_detected.toLocaleString()}</div>
+                  <div className="stat-subtext">{data.lines_processed.toLocaleString()} RAW LINES</div>
                 </div>
-                <div className="stat-value">
-                  {(data.critical_severity_count + data.high_severity_count).toLocaleString()}
-                </div>
-                <div className="stat-subtext">
-                  {data.critical_severity_count} CRIT · {data.high_severity_count} HIGH
-                </div>
-              </div>
 
-              <div className="bento-card" id="stat-messages">
-                <div className="stat-label">
-                  <span>MESSAGES ANALYZED</span>
+                <div className="bento-card" id="stat-players">
+                  <div className="stat-label">
+                    <span>UNIQUE PLAYERS</span>
+                  </div>
+                  <div className="stat-value">{data.unique_players_count.toLocaleString()}</div>
+                  <div className="stat-subtext">
+                    {Object.values(data.player_profiles).filter((p) => p.flagged_messages > 0).length} FLAGGED PROFILES
+                  </div>
                 </div>
-                <div className="stat-value">{data.messages_detected.toLocaleString()}</div>
-                <div className="stat-subtext">{data.lines_processed.toLocaleString()} RAW LINES</div>
-              </div>
 
-              <div className="bento-card" id="stat-players">
-                <div className="stat-label">
-                  <span>UNIQUE PLAYERS</span>
+                <div className="bento-card" id="stat-file">
+                  <div className="stat-label">
+                    <span>DISPATCHED PUNISHMENTS</span>
+                  </div>
+                  <div className="stat-value">{punishments.length}</div>
+                  <div className="stat-subtext">
+                    /STAFF LOG LEDGER
+                  </div>
                 </div>
-                <div className="stat-value">{data.unique_players_count.toLocaleString()}</div>
-                <div className="stat-subtext">
-                  {Object.values(data.player_profiles).filter((p) => p.flagged_messages > 0).length} FLAGGED PROFILES
-                </div>
-              </div>
-
-              <div className="bento-card" id="stat-file">
-                <div className="stat-label">
-                  <span>DISPATCHED PUNISHMENTS</span>
-                </div>
-                <div className="stat-value">{punishments.length}</div>
-                <div className="stat-subtext">
-                  /STAFF LOG LEDGER
-                </div>
-              </div>
-            </section>
+              </section>
+            )}
 
             {/* TAB 1: SPLIT-PANE REVIEW QUEUE + DOCKED CASE INSPECTOR */}
             {activeTab === 'dashboard' && (
@@ -2529,30 +2752,209 @@ export const App: React.FC = () => {
                     >
                       All Categories
                     </button>
-                    {Object.entries(data.category_breakdown).map(([cat, count]) => (
-                      <button
-                        type="button"
-                        key={cat}
-                        className={`cat-filter-btn ${selectedCategory === cat ? 'active' : ''}`}
-                        onClick={() => setSelectedCategory(selectedCategory === cat ? 'all' : cat)}
-                        title={`Filter by ${cat}`}
-                      >
-                        <span>{cat.replace('_', ' ')}</span>
-                        <span className="cat-filter-count">{count}</span>
-                      </button>
-                    ))}
+                    {data ? (
+                      Object.entries(data.category_breakdown).map(([cat, count]) => (
+                        <button
+                          type="button"
+                          key={cat}
+                          className={`cat-filter-btn ${selectedCategory === cat ? 'active' : ''}`}
+                          onClick={() => setSelectedCategory(selectedCategory === cat ? 'all' : cat)}
+                          title={`Filter by ${cat}`}
+                        >
+                          <span>{cat.replace('_', ' ')}</span>
+                          <span className="cat-filter-count">{count}</span>
+                        </button>
+                      ))
+                    ) : (
+                      ['hate_speech', 'harassment', 'toxicity', 'severe_profanity', 'sexual_content', 'spam_advertising'].map((cat) => (
+                        <button
+                          type="button"
+                          key={cat}
+                          className={`cat-filter-btn ${selectedCategory === cat ? 'active' : ''}`}
+                          onClick={() => setSelectedCategory(selectedCategory === cat ? 'all' : cat)}
+                        >
+                          <span>{cat.replace('_', ' ')}</span>
+                        </button>
+                      ))
+                    )}
                   </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                    <span>Shortcuts:</span>
-                    <span className="kbd-hint">J/K</span>
-                    <span>Step</span>
-                    <span className="kbd-hint">C</span>
-                    <span>Confirm</span>
-                    <span className="kbd-hint">X</span>
-                    <span>False Pos</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    {/* Date Timeline Filter Controls */}
+                    <div className="date-filter-box" title="Filter chat flags from a specific date to present">
+                      <Calendar size={13} style={{ color: startDateFilter ? 'var(--accent-brand)' : 'var(--text-muted)', flexShrink: 0 }} />
+                      <span style={{ fontSize: '0.72rem', fontWeight: 600 }}>From:</span>
+                      <input
+                        type="date"
+                        className="date-filter-input"
+                        value={startDateFilter}
+                        onChange={(e) => setStartDateFilter(e.target.value)}
+                        title="Start date (flags from this date onwards)"
+                      />
+                      {startDateFilter && (
+                        <button
+                          type="button"
+                          className="date-clear-btn"
+                          onClick={() => setStartDateFilter('')}
+                          title="Clear start date"
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="date-filter-box" title="To date (optional ceiling, defaults to present)">
+                      <span style={{ fontSize: '0.72rem', fontWeight: 600 }}>To:</span>
+                      <input
+                        type="date"
+                        className="date-filter-input"
+                        value={endDateFilter}
+                        onChange={(e) => setEndDateFilter(e.target.value)}
+                        title="End date (defaults to present if blank)"
+                      />
+                      {endDateFilter && (
+                        <button
+                          type="button"
+                          className="date-clear-btn"
+                          onClick={() => setEndDateFilter('')}
+                          title="Clear end date"
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Quick Date Presets: Today, Last 7d */}
+                    <button
+                      type="button"
+                      className={`cat-filter-btn ${startDateFilter === todayDateStr && !endDateFilter ? 'active' : ''}`}
+                      onClick={() => {
+                        if (startDateFilter === todayDateStr && !endDateFilter) {
+                          setStartDateFilter('');
+                        } else {
+                          setStartDateFilter(todayDateStr);
+                          setEndDateFilter('');
+                        }
+                      }}
+                      title="Filter messages from Today to Present"
+                    >
+                      Today
+                    </button>
+
+                    <button
+                      type="button"
+                      className={`cat-filter-btn ${startDateFilter === past7DateStr && !endDateFilter ? 'active' : ''}`}
+                      onClick={() => {
+                        if (startDateFilter === past7DateStr && !endDateFilter) {
+                          setStartDateFilter('');
+                        } else {
+                          setStartDateFilter(past7DateStr);
+                          setEndDateFilter('');
+                        }
+                      }}
+                      title="Filter messages from past 7 days to present"
+                    >
+                      Past 7 Days
+                    </button>
+
+                    {(startDateFilter || endDateFilter) && (
+                      <button
+                        type="button"
+                        className="cat-filter-btn"
+                        style={{ color: 'var(--sev-critical)' }}
+                        onClick={() => {
+                          setStartDateFilter('');
+                          setEndDateFilter('');
+                        }}
+                        title="Clear all date restrictions"
+                      >
+                        Reset Dates
+                      </button>
+                    )}
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.72rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                      <span>Shortcuts:</span>
+                      <span className="kbd-hint">J/K</span>
+                      <span>Step</span>
+                      <span className="kbd-hint">C</span>
+                      <span>Confirm</span>
+                      <span className="kbd-hint">X</span>
+                      <span>False Pos</span>
+                    </div>
                   </div>
                 </section>
+
+                {/* If no data loaded: Show Armed Standby Triage Panel with Date Scope */}
+                {!data ? (
+                  <section className="standby-queue-banner" id="standby-triage-panel">
+                    <div className="standby-queue-header">
+                      <div>
+                        <div className="standby-badge-live">
+                          <Calendar size={13} />
+                          <span>
+                            {startDateFilter
+                              ? `DATE SCOPE ARMED: FROM ${startDateFilter} TO ${endDateFilter || 'PRESENT'}`
+                              : 'DATE SCOPE: ALL AVAILABLE LOGS (SELECT DATE TO RESTRICT)'}
+                          </span>
+                        </div>
+                        <h3 className="standby-queue-title" style={{ marginTop: '0.65rem' }}>
+                          Forensic Moderation Triage Queue
+                        </h3>
+                        <p className="standby-queue-desc">
+                          {startDateFilter ? (
+                            <>
+                              Studio is armed to check chat logs and flags from <strong>{startDateFilter}</strong> to <strong>{endDateFilter || 'Present'}</strong>. Choose a live channel stream or load sample data below to inspect violations.
+                            </>
+                          ) : (
+                            <>
+                              Select a date above (or click <strong>Today</strong> / <strong>Past 7 Days</strong>) to check messages and flags from a specific date to present, then fetch a live channel stream or load sample logs.
+                            </>
+                          )}
+                        </p>
+                      </div>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', alignItems: 'flex-end' }}>
+                        <button
+                          type="button"
+                          className="btn-primary"
+                          style={{ padding: '0.65rem 1.15rem', fontSize: '0.82rem' }}
+                          onClick={() => handleDiscordTokenFetch(undefined, discordChannelId, false)}
+                          disabled={isLoading}
+                        >
+                          <RefreshCw size={13} className={isLoading ? 'spin' : ''} />
+                          {isLoading ? 'Scanning Stream...' : `Scan ${presetChannels.find(p => p.channel_id === discordChannelId)?.name || 'Selected Channel'} →`}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          style={{ padding: '0.55rem 0.95rem', fontSize: '0.78rem' }}
+                          onClick={loadSample}
+                          disabled={isLoading}
+                        >
+                          Load Sample Dataset
+                        </button>
+                      </div>
+                    </div>
+
+                    {cachedChannels.length > 0 && (
+                      <div style={{ marginTop: '0.6rem', paddingTop: '0.85rem', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
+                          Instant Memory Vault ({cachedChannels.length} cached channels):
+                        </span>
+                        {cachedChannels.map((c) => (
+                          <button
+                            key={c.channel_id}
+                            type="button"
+                            className="cat-filter-btn"
+                            onClick={() => handleLoadCachedChannel(c.channel_id)}
+                          >
+                            {c.channel_name} ({c.cached_messages_count.toLocaleString()} msgs)
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                ) : (
 
                 <div className={`workbench-split ${activeMessage && !isExpandedModal ? 'inspector-open' : ''}`}>
                   {/* Left Pane: High-Density Forensic Queue */}
@@ -2562,6 +2964,11 @@ export const App: React.FC = () => {
                         <h3 className="preview-title">Moderation Triage Queue</h3>
                         <span className="count-text" id="filtered-count">
                           {totalMessages.toLocaleString()} results · Page {currentPage}/{totalPages}
+                          {startDateFilter && (
+                            <span style={{ color: 'var(--accent-brand)', marginLeft: '0.4rem', fontWeight: 700 }}>
+                              (From {startDateFilter}{endDateFilter ? ` to ${endDateFilter}` : ' to Present'})
+                            </span>
+                          )}
                         </span>
                       </div>
 
@@ -2652,6 +3059,29 @@ export const App: React.FC = () => {
                             onChange={(e) => setSearchQuery(e.target.value)}
                             className="search-input"
                           />
+                        </div>
+
+                        {/* Inline Table Date Range Filter */}
+                        <div className="date-filter-box" title="Filter from specific date to present">
+                          <Calendar size={13} style={{ color: startDateFilter ? 'var(--accent-brand)' : 'var(--text-muted)', flexShrink: 0 }} />
+                          <span style={{ fontSize: '0.72rem', fontWeight: 600 }}>Date:</span>
+                          <input
+                            type="date"
+                            className="date-filter-input"
+                            value={startDateFilter}
+                            onChange={(e) => setStartDateFilter(e.target.value)}
+                            title="Filter flags from this date to present"
+                          />
+                          {startDateFilter && (
+                            <button
+                              type="button"
+                              className="date-clear-btn"
+                              onClick={() => setStartDateFilter('')}
+                              title="Clear date filter"
+                            >
+                              <X size={12} />
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -2996,37 +3426,58 @@ export const App: React.FC = () => {
                       isExpandedModal={isExpandedModal}
                       onToggleExpandModal={() => setIsExpandedModal(!isExpandedModal)}
                       onOpenPlayerByName={(uname) => {
-                        if (data.player_profiles[uname]) {
+                        if (data?.player_profiles[uname]) {
                           handleOpenPlayerDossier(data.player_profiles[uname]);
                         }
                       }}
                     />
                   )}
                 </div>
+                )}
               </>
             )}
 
             {/* TAB 2: PLAYER BEHAVIOR DOSSIERS */}
             {activeTab === 'players' && (
-              <PlayersDossiersView data={data} onOpenPlayerDossier={handleOpenPlayerDossier} />
+              data ? (
+                <PlayersDossiersView data={data} onOpenPlayerDossier={handleOpenPlayerDossier} />
+              ) : (
+                <div className="empty-state" style={{ marginTop: '1.5rem' }}>
+                  <BrandLogoMark size={44} />
+                  <h3 style={{ marginTop: '0.75rem', color: 'var(--text-primary)' }}>Player Dossiers</h3>
+                  <p style={{ marginTop: '0.35rem', color: 'var(--text-secondary)', fontSize: '0.84rem' }}>
+                    Load a log dataset or scan a live Discord channel to inspect individual player toxicity history.
+                  </p>
+                </div>
+              )
             )}
 
             {/* TAB 3: ANALYTICS WORKBENCH */}
             {activeTab === 'analytics' && (
-              <AnalyticsWorkbenchView
-                data={data}
-                messages={messages}
-                onFilterByCategory={(cat) => {
-                  setSelectedCategory(cat);
-                  setViewFilter('flagged');
-                  setActiveTab('dashboard');
-                }}
-                onFilterByPlayer={(uname) => {
-                  setSelectedPlayer(uname);
-                  setViewFilter('all');
-                  setActiveTab('dashboard');
-                }}
-              />
+              data ? (
+                <AnalyticsWorkbenchView
+                  data={data}
+                  messages={messages}
+                  onFilterByCategory={(cat) => {
+                    setSelectedCategory(cat);
+                    setViewFilter('flagged');
+                    setActiveTab('dashboard');
+                  }}
+                  onFilterByPlayer={(uname) => {
+                    setSelectedPlayer(uname);
+                    setViewFilter('all');
+                    setActiveTab('dashboard');
+                  }}
+                />
+              ) : (
+                <div className="empty-state" style={{ marginTop: '1.5rem' }}>
+                  <BrandLogoMark size={44} />
+                  <h3 style={{ marginTop: '0.75rem', color: 'var(--text-primary)' }}>Telemetry Analytics</h3>
+                  <p style={{ marginTop: '0.35rem', color: 'var(--text-secondary)', fontSize: '0.84rem' }}>
+                    Scan a Discord channel or load sample data to generate heuristic distribution charts and severity matrices.
+                  </p>
+                </div>
+              )
             )}
 
             {/* TAB 4: STAFF PUNISHMENT CASE LEDGER */}
@@ -3040,7 +3491,7 @@ export const App: React.FC = () => {
             )}
 
             {/* Parsing Warnings */}
-            {data.parsing_errors.length > 0 && (
+            {data && data.parsing_errors.length > 0 && (
               <section className="diagnostics-box" id="parsing-errors-list">
                 <div className="diagnostics-title">
                   <AlertTriangle size={15} />
@@ -3059,29 +3510,6 @@ export const App: React.FC = () => {
               </section>
             )}
           </>
-        )}
-
-        {/* Empty State before stream ingestion */}
-        {!data && !isLoading && activeTab !== 'live' && (
-          <div className="empty-state" id="initial-empty-state">
-            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '1rem' }}>
-              <BrandLogoMark size={52} />
-            </div>
-            <h3 style={{ color: 'var(--text-primary)', fontSize: '1.05rem', fontWeight: 600 }}>
-              Ready for Stream Ingestion
-            </h3>
-            <p style={{ marginTop: '0.4rem', maxWidth: '520px', marginInline: 'auto', fontSize: '0.84rem' }}>
-              Select one of your 6 preset Discord channels above and click <strong>Fetch &amp; Analyze</strong>, or load the sample dataset to inspect violations in the split-pane triage workbench.
-            </p>
-            <div style={{ marginTop: '1.25rem', display: 'flex', gap: '0.6rem', justifyContent: 'center', flexWrap: 'wrap' }}>
-              <button type="button" className="btn-primary" onClick={loadSample}>
-                Load Sample Minecraft Dataset
-              </button>
-              <button type="button" className="btn-secondary" onClick={() => setIsThemeMenuOpen(true)}>
-                <Palette size={14} /> Explore 10 Themes &amp; Checkpoints
-              </button>
-            </div>
-          </div>
         )}
       </main>
 
