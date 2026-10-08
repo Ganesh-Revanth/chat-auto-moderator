@@ -403,6 +403,7 @@ export const App: React.FC = () => {
     target: number;
     channelName: string;
     rateLimitWaitMs: number;
+    mode?: 'date' | 'limit';
   } | null>(null);
 
   // Active Tab
@@ -689,6 +690,30 @@ export const App: React.FC = () => {
   const [todayDateStr] = useState<string>(() => new Date().toISOString().slice(0, 10));
   const [past7DateStr] = useState<string>(() => new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10));
 
+  // Moderation Scope Mode: 'date' vs 'limit'
+  // When moderating by date, message limit is IRRELEVANT (analyzing all messages in date range)
+  // When moderating by message limit, dates are IRRELEVANT (analyzing newest N messages with zero date cutoff)
+  const [scopeMode, setScopeMode] = useState<'date' | 'limit'>('limit');
+
+  const handleSelectDateScope = (start?: string, end?: string) => {
+    setScopeMode('date');
+    if (start !== undefined) {
+      setStartDateFilter(start);
+    } else if (!startDateFilter) {
+      setStartDateFilter(todayDateStr);
+    }
+    if (end !== undefined) {
+      setEndDateFilter(end);
+    }
+  };
+
+  const handleSelectLimitScope = (newLimit?: number) => {
+    setScopeMode('limit');
+    setStartDateFilter('');
+    setEndDateFilter('');
+    if (newLimit) setDiscordFetchLimit(newLimit);
+  };
+
   // Batch Selection State
   const [selectedMsgIds, setSelectedMsgIds] = useState<number[]>([]);
 
@@ -763,8 +788,8 @@ export const App: React.FC = () => {
       status: selectedStatus,
       search: searchQuery,
       sortBy,
-      startDate: startDateFilter,
-      endDate: endDateFilter,
+      startDate: scopeMode === 'date' ? startDateFilter : undefined,
+      endDate: scopeMode === 'date' ? endDateFilter : undefined,
     });
   }, [
     data,
@@ -775,6 +800,7 @@ export const App: React.FC = () => {
     selectedStatus,
     searchQuery,
     sortBy,
+    scopeMode,
     startDateFilter,
     endDateFilter,
     fetchMessages,
@@ -794,8 +820,10 @@ export const App: React.FC = () => {
       let url = `${API_BASE_URL}/api/v1/upload`;
       const queryParams = new URLSearchParams();
       if (formatHint !== 'auto') queryParams.set('format_hint', formatHint);
-      if (startDateFilter?.trim()) queryParams.set('start_date', startDateFilter.trim());
-      if (endDateFilter?.trim()) queryParams.set('end_date', endDateFilter.trim());
+      if (scopeMode === 'date') {
+        if (startDateFilter?.trim()) queryParams.set('start_date', startDateFilter.trim());
+        if (endDateFilter?.trim()) queryParams.set('end_date', endDateFilter.trim());
+      }
       if (queryParams.toString()) url += `?${queryParams.toString()}`;
 
       const response = await fetch(url, {
@@ -856,6 +884,18 @@ export const App: React.FC = () => {
       return;
     }
 
+    const isModeratingByDate = scopeMode === 'date';
+    const activeStartDate = isModeratingByDate
+      ? (startDateFilter?.trim() || todayDateStr)
+      : undefined;
+    const activeEndDate = isModeratingByDate
+      ? (endDateFilter?.trim() || undefined)
+      : undefined;
+
+    if (isModeratingByDate && !startDateFilter) {
+      setStartDateFilter(todayDateStr);
+    }
+
     setIsLoading(true);
     setErrorMessage(null);
     setMessages([]);
@@ -864,9 +904,10 @@ export const App: React.FC = () => {
     setFetchProgress({
       status: 'starting',
       fetched: 0,
-      target: discordFetchLimit,
+      target: isModeratingByDate ? 0 : discordFetchLimit,
       channelName: targetChannel,
       rateLimitWaitMs: 0,
+      mode: isModeratingByDate ? 'date' : 'limit',
     });
 
     try {
@@ -876,9 +917,10 @@ export const App: React.FC = () => {
         body: JSON.stringify({
           token: discordToken.trim(),
           channel_id: targetChannel,
-          limit: discordFetchLimit,
-          start_date: startDateFilter?.trim() || undefined,
-          end_date: endDateFilter?.trim() || undefined,
+          moderate_by: isModeratingByDate ? 'date' : 'limit',
+          limit: isModeratingByDate ? undefined : discordFetchLimit,
+          start_date: activeStartDate,
+          end_date: activeEndDate,
           async_mode: true,
           use_cache: useSmartCache,
           force_rescan: forceRescan,
@@ -903,9 +945,10 @@ export const App: React.FC = () => {
       setFetchProgress({
         status: initResult.status || 'fetching',
         fetched: initResult.fetched || 0,
-        target: initResult.target || discordFetchLimit,
+        target: isModeratingByDate ? 0 : (initResult.target || discordFetchLimit),
         channelName: initResult.channel_name || targetChannel,
         rateLimitWaitMs: 0,
+        mode: isModeratingByDate ? 'date' : 'limit',
       });
 
       while (true) {
@@ -929,9 +972,10 @@ export const App: React.FC = () => {
         setFetchProgress({
           status: st.status,
           fetched: st.fetched || 0,
-          target: st.target || discordFetchLimit,
+          target: isModeratingByDate ? 0 : (st.target || discordFetchLimit),
           channelName: st.channel_name || targetChannel,
           rateLimitWaitMs: st.rate_limit_wait_ms || 0,
+          mode: isModeratingByDate ? 'date' : 'limit',
         });
       }
     } catch (err: any) {
@@ -950,8 +994,10 @@ export const App: React.FC = () => {
     setActiveMessage(null);
     try {
       const queryParams = new URLSearchParams();
-      if (startDateFilter?.trim()) queryParams.set('start_date', startDateFilter.trim());
-      if (endDateFilter?.trim()) queryParams.set('end_date', endDateFilter.trim());
+      if (scopeMode === 'date') {
+        if (startDateFilter?.trim()) queryParams.set('start_date', startDateFilter.trim());
+        if (endDateFilter?.trim()) queryParams.set('end_date', endDateFilter.trim());
+      }
       const queryStr = queryParams.toString() ? `?${queryParams.toString()}` : '';
       const response = await fetch(`${API_BASE_URL}/api/v1/sample${queryStr}`);
       if (!response.ok) {
@@ -1693,6 +1739,151 @@ export const App: React.FC = () => {
         </div>
       </header>
 
+      {/* GLOBAL DATE SCOPE & TIMELINE FILTER BAR (Date vs Limit Mutually Exclusive) */}
+      <div className="global-date-scope-bar" id="global-date-scope-bar">
+        <div className="global-date-scope-left">
+          <div className="scope-mode-toggle-group">
+            <button
+              type="button"
+              className={`scope-mode-btn ${scopeMode === 'date' ? 'active' : ''}`}
+              onClick={() => handleSelectDateScope(startDateFilter || todayDateStr, endDateFilter)}
+              title="Moderate via Date Range (Message limit becomes irrelevant)"
+            >
+              📅 By Date Scope
+            </button>
+            <button
+              type="button"
+              className={`scope-mode-btn ${scopeMode === 'limit' ? 'active' : ''}`}
+              onClick={() => handleSelectLimitScope()}
+              title="Moderate via Message Limit (Dates become irrelevant)"
+            >
+              🔢 By Message Limit
+            </button>
+          </div>
+
+          <span className={`scope-mode-note ${scopeMode === 'date' ? 'date-active' : 'limit-active'}`}>
+            {scopeMode === 'date' ? (
+              <>
+                <Calendar size={13} />
+                <span>
+                  {startDateFilter
+                    ? `DATE SCOPE: ${startDateFilter} → ${endDateFilter || 'PRESENT'} (MESSAGE LIMIT IRRELEVANT)`
+                    : 'SELECT DATE TO RESTRICT (MESSAGE LIMIT IRRELEVANT)'}
+                </span>
+              </>
+            ) : (
+              <>
+                <SlidersHorizontal size={13} />
+                <span>
+                  MESSAGE LIMIT: LATEST {discordFetchLimit.toLocaleString()} MSGS (DATES IRRELEVANT)
+                </span>
+              </>
+            )}
+          </span>
+        </div>
+
+        <div className="global-date-scope-controls">
+          {scopeMode === 'date' ? (
+            <>
+              <div className="date-filter-box" title="Start date: analyze chat logs from this date onwards (limit bypassed)">
+                <span className="date-input-prefix">From:</span>
+                <input
+                  type="date"
+                  className="date-filter-input"
+                  value={startDateFilter}
+                  onChange={(e) => handleSelectDateScope(e.target.value, endDateFilter)}
+                  title="Filter messages starting from this date"
+                />
+                {startDateFilter && (
+                  <button
+                    type="button"
+                    className="date-clear-btn"
+                    onClick={() => handleSelectLimitScope()}
+                    title="Switch back to message limit mode"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+
+              <div className="date-filter-box" title="End date: defaults to Present if blank">
+                <span className="date-input-prefix">To:</span>
+                <input
+                  type="date"
+                  className="date-filter-input"
+                  value={endDateFilter}
+                  onChange={(e) => handleSelectDateScope(startDateFilter, e.target.value)}
+                  title="End date (defaults to present if blank)"
+                />
+                {endDateFilter && (
+                  <button
+                    type="button"
+                    className="date-clear-btn"
+                    onClick={() => setEndDateFilter('')}
+                    title="Clear end date"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+
+              <button
+                type="button"
+                className={`cat-filter-btn ${startDateFilter === todayDateStr && !endDateFilter ? 'active' : ''}`}
+                onClick={() => handleSelectDateScope(todayDateStr, '')}
+                title="Moderate messages from today onwards"
+              >
+                Today
+              </button>
+
+              <button
+                type="button"
+                className={`cat-filter-btn ${startDateFilter === past7DateStr && !endDateFilter ? 'active' : ''}`}
+                onClick={() => handleSelectDateScope(past7DateStr, '')}
+                title="Moderate messages from the past 7 days"
+              >
+                Past 7 Days
+              </button>
+
+              <button
+                type="button"
+                className="cat-filter-btn"
+                onClick={() => handleSelectLimitScope()}
+                title="Switch to Message Limit mode (make dates irrelevant)"
+              >
+                Clear Dates →
+              </button>
+            </>
+          ) : (
+            <>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+                Active Batch Limit:
+              </span>
+              {[500, 2500, 10000, 25000].map((lim) => (
+                <button
+                  key={lim}
+                  type="button"
+                  className={`cat-filter-btn ${discordFetchLimit === lim ? 'active' : ''}`}
+                  onClick={() => handleSelectLimitScope(lim)}
+                  title={`Moderate newest ${lim.toLocaleString()} messages (dates irrelevant)`}
+                >
+                  {lim.toLocaleString()} msgs
+                </button>
+              ))}
+              <button
+                type="button"
+                className="cat-filter-btn"
+                style={{ color: 'var(--accent-brand)' }}
+                onClick={() => handleSelectDateScope(todayDateStr, '')}
+                title="Switch to Date Timeline mode (make message limit irrelevant)"
+              >
+                📅 Switch to Date Scope
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
       <main className="app-main">
         {/* 12-COLUMN HERO SECTION (7 COLS LEFT / 5 COLS RIGHT) */}
         {(!data || isIngestionExpanded) && (
@@ -1708,6 +1899,117 @@ export const App: React.FC = () => {
                 <p className="hero-lead-copy">
                   High-contrast forensic chat log ingestion, deobfuscated toxicity detection, and instant 2-step Discord <code>/staff log punishment</code> modal automation.
                 </p>
+              </div>
+
+              {/* Prominent Scope Mode Selector Card on First Landing Page Hero */}
+              <div className="hero-date-scope-card">
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.6rem', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                    <div className="scope-mode-toggle-group">
+                      <button
+                        type="button"
+                        className={`scope-mode-btn ${scopeMode === 'date' ? 'active' : ''}`}
+                        onClick={() => handleSelectDateScope(startDateFilter || todayDateStr, endDateFilter)}
+                      >
+                        📅 By Date Scope
+                      </button>
+                      <button
+                        type="button"
+                        className={`scope-mode-btn ${scopeMode === 'limit' ? 'active' : ''}`}
+                        onClick={() => handleSelectLimitScope()}
+                      >
+                        🔢 By Message Limit
+                      </button>
+                    </div>
+                    <span className="date-hint-badge">
+                      {scopeMode === 'date'
+                        ? (startDateFilter ? `Date Scope: ${startDateFilter} → ${endDateFilter || 'Present'} (Limit Irrelevant)` : 'Date Mode (Limit Irrelevant)')
+                        : `Limit: ${discordFetchLimit.toLocaleString()} msgs (Dates Irrelevant)`}
+                    </span>
+                  </div>
+
+                  {scopeMode === 'date' ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                      <button
+                        type="button"
+                        className={`cat-filter-btn ${startDateFilter === todayDateStr && !endDateFilter ? 'active' : ''}`}
+                        onClick={() => handleSelectDateScope(todayDateStr, '')}
+                      >
+                        Today
+                      </button>
+                      <button
+                        type="button"
+                        className={`cat-filter-btn ${startDateFilter === past7DateStr && !endDateFilter ? 'active' : ''}`}
+                        onClick={() => handleSelectDateScope(past7DateStr, '')}
+                      >
+                        Past 7 Days
+                      </button>
+                      <button
+                        type="button"
+                        className="cat-filter-btn"
+                        onClick={() => handleSelectLimitScope()}
+                        title="Switch to message limit mode"
+                      >
+                        Clear Dates
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                      {[500, 2500, 25000].map((lim) => (
+                        <button
+                          key={lim}
+                          type="button"
+                          className={`cat-filter-btn ${discordFetchLimit === lim ? 'active' : ''}`}
+                          onClick={() => handleSelectLimitScope(lim)}
+                        >
+                          {lim.toLocaleString()}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {scopeMode === 'date' ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginTop: '0.55rem', flexWrap: 'wrap' }}>
+                    <div className="date-filter-box">
+                      <span className="date-input-prefix">From:</span>
+                      <input
+                        type="date"
+                        className="date-filter-input"
+                        value={startDateFilter}
+                        onChange={(e) => handleSelectDateScope(e.target.value, endDateFilter)}
+                      />
+                      {startDateFilter && (
+                        <button type="button" className="date-clear-btn" onClick={() => handleSelectLimitScope()}>
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+                    <div className="date-filter-box">
+                      <span className="date-input-prefix">To:</span>
+                      <input
+                        type="date"
+                        className="date-filter-input"
+                        value={endDateFilter}
+                        onChange={(e) => handleSelectDateScope(startDateFilter, e.target.value)}
+                      />
+                      {endDateFilter && (
+                        <button type="button" className="date-clear-btn" onClick={() => setEndDateFilter('')}>
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+                    <span style={{ fontSize: '0.72rem', color: 'var(--accent-brand)', fontFamily: 'var(--font-mono)' }}>
+                      ⚡ Message count limit is irrelevant (scanning all messages in date range)
+                    </span>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginTop: '0.55rem', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+                      ⚡ Moderating latest {discordFetchLimit.toLocaleString()} messages. Dates are irrelevant (no date cutoff).
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div className="hero-cta-row">
@@ -2119,22 +2421,43 @@ export const App: React.FC = () => {
                     <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
                       <div className="input-field-group">
                         <label className="input-field-label" htmlFor="discord-limit-select">
-                          <span>Batch Size</span>
+                          <span>{scopeMode === 'date' ? '03. Batch Limit (Bypassed)' : '03. Batch Size'}</span>
                         </label>
-                        <select
-                          id="discord-limit-select"
-                          value={discordFetchLimit}
-                          onChange={(e) => setDiscordFetchLimit(Number(e.target.value))}
-                          className="filter-select"
-                          style={{ height: '38px', fontFamily: 'var(--font-mono)' }}
-                        >
-                          <option value={500}>500 msgs</option>
-                          <option value={2500}>2,500 msgs</option>
-                          <option value={10000}>10,000 msgs</option>
-                          <option value={25000}>25,000 msgs</option>
-                          <option value={50000}>50,000 msgs</option>
-                          <option value={100000}>100,000 msgs</option>
-                        </select>
+                        {scopeMode === 'date' ? (
+                          <div
+                            style={{
+                              height: '38px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              padding: '0 0.65rem',
+                              background: 'rgba(56, 189, 248, 0.08)',
+                              border: '1px dashed var(--accent-brand)',
+                              borderRadius: 'var(--radius-xs)',
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: '0.74rem',
+                              color: 'var(--accent-brand)',
+                              whiteSpace: 'nowrap',
+                            }}
+                            title="Date mode is active: all messages within date range are analyzed. Message limit is irrelevant."
+                          >
+                            ⚡ Bypassed (All in Date Range)
+                          </div>
+                        ) : (
+                          <select
+                            id="discord-limit-select"
+                            value={discordFetchLimit}
+                            onChange={(e) => handleSelectLimitScope(Number(e.target.value))}
+                            className="filter-select"
+                            style={{ height: '38px', fontFamily: 'var(--font-mono)' }}
+                          >
+                            <option value={500}>500 msgs</option>
+                            <option value={2500}>2,500 msgs</option>
+                            <option value={10000}>10,000 msgs</option>
+                            <option value={25000}>25,000 msgs</option>
+                            <option value={50000}>50,000 msgs</option>
+                            <option value={100000}>100,000 msgs</option>
+                          </select>
+                        )}
                       </div>
 
                       <button
@@ -2145,111 +2468,151 @@ export const App: React.FC = () => {
                         disabled={isLoading}
                       >
                         {isLoading ? <div className="spinner" style={{ width: '14px', height: '14px' }} /> : null}
-                        {isLoading ? 'Fetching...' : 'Fetch & Analyze'}
+                        {isLoading
+                          ? 'Fetching...'
+                          : scopeMode === 'date'
+                            ? `Scan Date Range (${startDateFilter || todayDateStr} → ${endDateFilter || 'Present'}) →`
+                            : `Fetch Latest ${discordFetchLimit.toLocaleString()} msgs →`}
                       </button>
                     </div>
                   </div>
 
-                  {/* Date Timeline Filter on Initial Ingestion Form */}
+                  {/* Scope Mode / Date Timeline Filter on Initial Ingestion Form */}
                   <div className="ingestion-date-filter-row">
                     <div className="date-field-header">
                       <div className="date-field-title">
-                        <Calendar size={15} style={{ color: startDateFilter ? 'var(--accent-brand)' : 'var(--text-muted)' }} />
-                        <span>Check Messages From Date (Timeline to Present)</span>
+                        <Calendar size={15} style={{ color: scopeMode === 'date' ? 'var(--accent-brand)' : 'var(--text-muted)' }} />
+                        <span>Moderation Scope:</span>
+                        <div className="scope-mode-toggle-group">
+                          <button
+                            type="button"
+                            className={`scope-mode-btn ${scopeMode === 'date' ? 'active' : ''}`}
+                            onClick={() => handleSelectDateScope(startDateFilter || todayDateStr, endDateFilter)}
+                          >
+                            📅 By Date Scope
+                          </button>
+                          <button
+                            type="button"
+                            className={`scope-mode-btn ${scopeMode === 'limit' ? 'active' : ''}`}
+                            onClick={() => handleSelectLimitScope()}
+                          >
+                            🔢 By Message Limit
+                          </button>
+                        </div>
                         <span className="date-hint-badge">
-                          {startDateFilter ? `Active Scope: ${startDateFilter} → ${endDateFilter || 'Present'}` : 'All Available History'}
+                          {scopeMode === 'date'
+                            ? (startDateFilter ? `Date Scope: ${startDateFilter} → ${endDateFilter || 'Present'} (Limit Irrelevant)` : 'Date Mode (Limit Irrelevant)')
+                            : `Message Limit Active: ${discordFetchLimit.toLocaleString()} msgs (Dates Irrelevant)`}
                         </span>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
-                        <button
-                          type="button"
-                          className={`cat-filter-btn ${!startDateFilter && !endDateFilter ? 'active' : ''}`}
-                          onClick={() => {
-                            setStartDateFilter('');
-                            setEndDateFilter('');
-                          }}
-                          title="Check all available history without date restriction"
-                        >
-                          All Time
-                        </button>
-                        <button
-                          type="button"
-                          className={`cat-filter-btn ${startDateFilter === todayDateStr && !endDateFilter ? 'active' : ''}`}
-                          onClick={() => {
-                            setStartDateFilter(todayDateStr);
-                            setEndDateFilter('');
-                          }}
-                          title="Check messages from Today to Present"
-                        >
-                          Today
-                        </button>
-                        <button
-                          type="button"
-                          className={`cat-filter-btn ${startDateFilter === past7DateStr && !endDateFilter ? 'active' : ''}`}
-                          onClick={() => {
-                            setStartDateFilter(past7DateStr);
-                            setEndDateFilter('');
-                          }}
-                          title="Check messages from Past 7 Days to Present"
-                        >
-                          Past 7 Days
-                        </button>
+                        {scopeMode === 'date' ? (
+                          <>
+                            <button
+                              type="button"
+                              className={`cat-filter-btn ${startDateFilter === todayDateStr && !endDateFilter ? 'active' : ''}`}
+                              onClick={() => handleSelectDateScope(todayDateStr, '')}
+                              title="Check messages from Today to Present"
+                            >
+                              Today
+                            </button>
+                            <button
+                              type="button"
+                              className={`cat-filter-btn ${startDateFilter === past7DateStr && !endDateFilter ? 'active' : ''}`}
+                              onClick={() => handleSelectDateScope(past7DateStr, '')}
+                              title="Check messages from Past 7 Days to Present"
+                            >
+                              Past 7 Days
+                            </button>
+                            <button
+                              type="button"
+                              className="cat-filter-btn"
+                              onClick={() => handleSelectLimitScope()}
+                              title="Switch to Message Limit mode (make dates irrelevant)"
+                            >
+                              Clear Dates / Use Message Limit
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            {[500, 2500, 10000, 25000].map((lim) => (
+                              <button
+                                key={lim}
+                                type="button"
+                                className={`cat-filter-btn ${discordFetchLimit === lim ? 'active' : ''}`}
+                                onClick={() => handleSelectLimitScope(lim)}
+                              >
+                                {lim.toLocaleString()} msgs
+                              </button>
+                            ))}
+                            <button
+                              type="button"
+                              className="cat-filter-btn"
+                              style={{ color: 'var(--accent-brand)' }}
+                              onClick={() => handleSelectDateScope(todayDateStr, '')}
+                            >
+                              📅 Switch to Date Scope
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
 
-                    <div className="date-inputs-cluster">
-                      <div className="date-filter-box" title="Start date: only analyze messages from this date onwards">
-                        <span className="date-input-prefix">From:</span>
-                        <input
-                          type="date"
-                          className="date-filter-input"
-                          value={startDateFilter}
-                          onChange={(e) => setStartDateFilter(e.target.value)}
-                          title="Filter messages starting from this date"
-                        />
-                        {startDateFilter && (
-                          <button
-                            type="button"
-                            className="date-clear-btn"
-                            onClick={() => setStartDateFilter('')}
-                            title="Clear start date"
-                          >
-                            <X size={12} />
-                          </button>
-                        )}
-                      </div>
+                    {scopeMode === 'date' ? (
+                      <div className="date-inputs-cluster">
+                        <div className="date-filter-box" title="Start date: only analyze messages from this date onwards (limit bypassed)">
+                          <span className="date-input-prefix">From:</span>
+                          <input
+                            type="date"
+                            className="date-filter-input"
+                            value={startDateFilter}
+                            onChange={(e) => handleSelectDateScope(e.target.value, endDateFilter)}
+                            title="Filter messages starting from this date"
+                          />
+                          {startDateFilter && (
+                            <button
+                              type="button"
+                              className="date-clear-btn"
+                              onClick={() => handleSelectLimitScope()}
+                              title="Switch to message limit mode"
+                            >
+                              <X size={12} />
+                            </button>
+                          )}
+                        </div>
 
-                      <div className="date-filter-box" title="End date: defaults to Present if left blank">
-                        <span className="date-input-prefix">To:</span>
-                        <input
-                          type="date"
-                          className="date-filter-input"
-                          value={endDateFilter}
-                          onChange={(e) => setEndDateFilter(e.target.value)}
-                          title="End date (defaults to Present if left blank)"
-                        />
-                        {endDateFilter && (
-                          <button
-                            type="button"
-                            className="date-clear-btn"
-                            onClick={() => setEndDateFilter('')}
-                            title="Clear end date"
-                          >
-                            <X size={12} />
-                          </button>
-                        )}
-                      </div>
+                        <div className="date-filter-box" title="End date: defaults to Present if left blank">
+                          <span className="date-input-prefix">To:</span>
+                          <input
+                            type="date"
+                            className="date-filter-input"
+                            value={endDateFilter}
+                            onChange={(e) => handleSelectDateScope(startDateFilter, e.target.value)}
+                            title="End date (defaults to Present if left blank)"
+                          />
+                          {endDateFilter && (
+                            <button
+                              type="button"
+                              className="date-clear-btn"
+                              onClick={() => setEndDateFilter('')}
+                              title="Clear end date"
+                            >
+                              <X size={12} />
+                            </button>
+                          )}
+                        </div>
 
-                      {startDateFilter ? (
                         <span className="date-status-pill active">
-                          ● Scanning will check flags from {startDateFilter} to {endDateFilter || 'Present'}
+                          ⚡ Moderating via Date: Message count limit is irrelevant (scanning all messages back to {startDateFilter || 'selected date'})
                         </span>
-                      ) : (
-                        <span className="date-status-pill">
-                          Full historical scan (select a date above to check from that date to present)
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.35rem 0' }}>
+                        <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+                          ⚡ Moderating via Message Limit: Analyzing newest {discordFetchLimit.toLocaleString()} messages. Dates are irrelevant (no date cutoff).
                         </span>
-                      )}
-                    </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Quick 1-Click Channel Selector Bar */}
@@ -2338,7 +2701,9 @@ export const App: React.FC = () => {
                         <div style={{ fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
                           {fetchProgress.status === 'analyzing'
                             ? `Analyzing ${fetchProgress.fetched.toLocaleString()} messages...`
-                            : `Fetching ${fetchProgress.channelName}: ${fetchProgress.fetched.toLocaleString()} / ${fetchProgress.target.toLocaleString()} messages`}
+                            : fetchProgress.mode === 'date' || fetchProgress.target === 0
+                              ? `Fetching ${fetchProgress.channelName}: ${fetchProgress.fetched.toLocaleString()} messages in date range (Message limit bypassed)...`
+                              : `Fetching ${fetchProgress.channelName}: ${fetchProgress.fetched.toLocaleString()} / ${fetchProgress.target.toLocaleString()} messages (Dates irrelevant)`}
                           {fetchProgress.rateLimitWaitMs > 0 && (
                             <span style={{ marginLeft: '0.6rem', color: 'var(--sev-medium)', fontSize: '0.74rem' }}>
                               (Rate-limit pause {(fetchProgress.rateLimitWaitMs / 1000).toFixed(1)}s)
@@ -2360,8 +2725,12 @@ export const App: React.FC = () => {
                         <div
                           className="progress-fill"
                           style={{
-                            width: `${Math.min(100, Math.max(2, (fetchProgress.fetched / (fetchProgress.target || 1)) * 100))}%`,
+                            width:
+                              fetchProgress.mode === 'date' || fetchProgress.target === 0
+                                ? '100%'
+                                : `${Math.min(100, Math.max(2, (fetchProgress.fetched / (fetchProgress.target || 1)) * 100))}%`,
                             transition: 'width 0.25s ease',
+                            opacity: fetchProgress.mode === 'date' ? 0.85 : 1,
                           }}
                         />
                       </div>
@@ -2780,96 +3149,130 @@ export const App: React.FC = () => {
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                    {/* Date Timeline Filter Controls */}
-                    <div className="date-filter-box" title="Filter chat flags from a specific date to present">
-                      <Calendar size={13} style={{ color: startDateFilter ? 'var(--accent-brand)' : 'var(--text-muted)', flexShrink: 0 }} />
-                      <span style={{ fontSize: '0.72rem', fontWeight: 600 }}>From:</span>
-                      <input
-                        type="date"
-                        className="date-filter-input"
-                        value={startDateFilter}
-                        onChange={(e) => setStartDateFilter(e.target.value)}
-                        title="Start date (flags from this date onwards)"
-                      />
-                      {startDateFilter && (
-                        <button
-                          type="button"
-                          className="date-clear-btn"
-                          onClick={() => setStartDateFilter('')}
-                          title="Clear start date"
-                        >
-                          <X size={12} />
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="date-filter-box" title="To date (optional ceiling, defaults to present)">
-                      <span style={{ fontSize: '0.72rem', fontWeight: 600 }}>To:</span>
-                      <input
-                        type="date"
-                        className="date-filter-input"
-                        value={endDateFilter}
-                        onChange={(e) => setEndDateFilter(e.target.value)}
-                        title="End date (defaults to present if blank)"
-                      />
-                      {endDateFilter && (
-                        <button
-                          type="button"
-                          className="date-clear-btn"
-                          onClick={() => setEndDateFilter('')}
-                          title="Clear end date"
-                        >
-                          <X size={12} />
-                        </button>
-                      )}
-                    </div>
-
-                    {/* Quick Date Presets: Today, Last 7d */}
-                    <button
-                      type="button"
-                      className={`cat-filter-btn ${startDateFilter === todayDateStr && !endDateFilter ? 'active' : ''}`}
-                      onClick={() => {
-                        if (startDateFilter === todayDateStr && !endDateFilter) {
-                          setStartDateFilter('');
-                        } else {
-                          setStartDateFilter(todayDateStr);
-                          setEndDateFilter('');
-                        }
-                      }}
-                      title="Filter messages from Today to Present"
-                    >
-                      Today
-                    </button>
-
-                    <button
-                      type="button"
-                      className={`cat-filter-btn ${startDateFilter === past7DateStr && !endDateFilter ? 'active' : ''}`}
-                      onClick={() => {
-                        if (startDateFilter === past7DateStr && !endDateFilter) {
-                          setStartDateFilter('');
-                        } else {
-                          setStartDateFilter(past7DateStr);
-                          setEndDateFilter('');
-                        }
-                      }}
-                      title="Filter messages from past 7 days to present"
-                    >
-                      Past 7 Days
-                    </button>
-
-                    {(startDateFilter || endDateFilter) && (
+                    <div className="scope-mode-toggle-group">
                       <button
                         type="button"
-                        className="cat-filter-btn"
-                        style={{ color: 'var(--sev-critical)' }}
-                        onClick={() => {
-                          setStartDateFilter('');
-                          setEndDateFilter('');
-                        }}
-                        title="Clear all date restrictions"
+                        className={`scope-mode-btn ${scopeMode === 'date' ? 'active' : ''}`}
+                        onClick={() => handleSelectDateScope(startDateFilter || todayDateStr, endDateFilter)}
+                        title="Moderate via Date Range (Message limit becomes irrelevant)"
                       >
-                        Reset Dates
+                        📅 By Date Scope
                       </button>
+                      <button
+                        type="button"
+                        className={`scope-mode-btn ${scopeMode === 'limit' ? 'active' : ''}`}
+                        onClick={() => handleSelectLimitScope()}
+                        title="Moderate via Message Limit (Dates become irrelevant)"
+                      >
+                        🔢 By Message Limit
+                      </button>
+                    </div>
+
+                    {scopeMode === 'date' ? (
+                      <>
+                        {/* Date Timeline Filter Controls */}
+                        <div className="date-filter-box" title="Filter chat flags from a specific date to present">
+                          <Calendar size={13} style={{ color: startDateFilter ? 'var(--accent-brand)' : 'var(--text-muted)', flexShrink: 0 }} />
+                          <span style={{ fontSize: '0.72rem', fontWeight: 600 }}>From:</span>
+                          <input
+                            type="date"
+                            className="date-filter-input"
+                            value={startDateFilter}
+                            onChange={(e) => handleSelectDateScope(e.target.value, endDateFilter)}
+                            title="Start date (flags from this date onwards)"
+                          />
+                          {startDateFilter && (
+                            <button
+                              type="button"
+                              className="date-clear-btn"
+                              onClick={() => handleSelectLimitScope()}
+                              title="Switch to message limit mode"
+                            >
+                              <X size={12} />
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="date-filter-box" title="To date (optional ceiling, defaults to present)">
+                          <span style={{ fontSize: '0.72rem', fontWeight: 600 }}>To:</span>
+                          <input
+                            type="date"
+                            className="date-filter-input"
+                            value={endDateFilter}
+                            onChange={(e) => handleSelectDateScope(startDateFilter, e.target.value)}
+                            title="End date (defaults to present if blank)"
+                          />
+                          {endDateFilter && (
+                            <button
+                              type="button"
+                              className="date-clear-btn"
+                              onClick={() => setEndDateFilter('')}
+                              title="Clear end date"
+                            >
+                              <X size={12} />
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Quick Date Presets: Today, Last 7d */}
+                        <button
+                          type="button"
+                          className={`cat-filter-btn ${startDateFilter === todayDateStr && !endDateFilter ? 'active' : ''}`}
+                          onClick={() => handleSelectDateScope(todayDateStr, '')}
+                          title="Filter messages from Today to Present"
+                        >
+                          Today
+                        </button>
+
+                        <button
+                          type="button"
+                          className={`cat-filter-btn ${startDateFilter === past7DateStr && !endDateFilter ? 'active' : ''}`}
+                          onClick={() => handleSelectDateScope(past7DateStr, '')}
+                          title="Filter messages from past 7 days to present"
+                        >
+                          Past 7 Days
+                        </button>
+
+                        <button
+                          type="button"
+                          className="cat-filter-btn"
+                          style={{ color: 'var(--sev-critical)' }}
+                          onClick={() => handleSelectLimitScope()}
+                          title="Switch to Message Limit mode (make dates irrelevant)"
+                        >
+                          Clear Dates →
+                        </button>
+
+                        <span className="date-status-pill active" style={{ fontSize: '0.7rem', padding: '0.2rem 0.5rem' }}>
+                          ⚡ Limit Irrelevant
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+                          Active Limit: <strong>{discordFetchLimit.toLocaleString()} msgs</strong> (Dates Irrelevant)
+                        </span>
+                        {[500, 2500, 10000, 25000].map((lim) => (
+                          <button
+                            key={lim}
+                            type="button"
+                            className={`cat-filter-btn ${discordFetchLimit === lim ? 'active' : ''}`}
+                            onClick={() => handleSelectLimitScope(lim)}
+                            title={`Filter latest ${lim.toLocaleString()} messages (dates irrelevant)`}
+                          >
+                            {lim.toLocaleString()} msgs
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          className="cat-filter-btn"
+                          style={{ color: 'var(--accent-brand)' }}
+                          onClick={() => handleSelectDateScope(todayDateStr, '')}
+                          title="Switch to Date Timeline mode (make message limit irrelevant)"
+                        >
+                          📅 Switch to Date Scope
+                        </button>
+                      </>
                     )}
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.72rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
@@ -2884,7 +3287,7 @@ export const App: React.FC = () => {
                   </div>
                 </section>
 
-                {/* If no data loaded: Show Armed Standby Triage Panel with Date Scope */}
+                {/* If no data loaded: Show Armed Standby Triage Panel with Scope Mode */}
                 {!data ? (
                   <section className="standby-queue-banner" id="standby-triage-panel">
                     <div className="standby-queue-header">
@@ -2892,22 +3295,22 @@ export const App: React.FC = () => {
                         <div className="standby-badge-live">
                           <Calendar size={13} />
                           <span>
-                            {startDateFilter
-                              ? `DATE SCOPE ARMED: FROM ${startDateFilter} TO ${endDateFilter || 'PRESENT'}`
-                              : 'DATE SCOPE: ALL AVAILABLE LOGS (SELECT DATE TO RESTRICT)'}
+                            {scopeMode === 'date'
+                              ? `DATE SCOPE ARMED: FROM ${startDateFilter || todayDateStr} TO ${endDateFilter || 'PRESENT'} (LIMIT IRRELEVANT)`
+                              : `MESSAGE LIMIT ARMED: LATEST ${discordFetchLimit.toLocaleString()} MSGS (DATES IRRELEVANT)`}
                           </span>
                         </div>
                         <h3 className="standby-queue-title" style={{ marginTop: '0.65rem' }}>
                           Forensic Moderation Triage Queue
                         </h3>
                         <p className="standby-queue-desc">
-                          {startDateFilter ? (
+                          {scopeMode === 'date' ? (
                             <>
-                              Studio is armed to check chat logs and flags from <strong>{startDateFilter}</strong> to <strong>{endDateFilter || 'Present'}</strong>. Choose a live channel stream or load sample data below to inspect violations.
+                              Studio is armed to check chat logs and flags from <strong>{startDateFilter || todayDateStr}</strong> to <strong>{endDateFilter || 'Present'}</strong>. Message limit is irrelevant—all messages in this range will be analyzed.
                             </>
                           ) : (
                             <>
-                              Select a date above (or click <strong>Today</strong> / <strong>Past 7 Days</strong>) to check messages and flags from a specific date to present, then fetch a live channel stream or load sample logs.
+                              Studio is armed to analyze the newest <strong>{discordFetchLimit.toLocaleString()}</strong> messages from the channel stream. Dates are irrelevant (zero date cutoff).
                             </>
                           )}
                         </p>
@@ -2922,7 +3325,11 @@ export const App: React.FC = () => {
                           disabled={isLoading}
                         >
                           <RefreshCw size={13} className={isLoading ? 'spin' : ''} />
-                          {isLoading ? 'Scanning Stream...' : `Scan ${presetChannels.find(p => p.channel_id === discordChannelId)?.name || 'Selected Channel'} →`}
+                          {isLoading
+                            ? 'Scanning Stream...'
+                            : scopeMode === 'date'
+                              ? `Scan Channel (Date Scope) →`
+                              : `Scan Channel (Latest ${discordFetchLimit.toLocaleString()} msgs) →`}
                         </button>
                         <button
                           type="button"

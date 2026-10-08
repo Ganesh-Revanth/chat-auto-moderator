@@ -342,9 +342,190 @@ const EXEMPT_WORDS = new Set([
   'night', 'nights', 'knight', 'knights', 'ignite', 'ignited', 'enigma', 'sign', 'benign', 'align', 'assign', 'resign', 'design', 'insignia', 'dignity', 'indignant',
   'snicker', 'snickers', 'snigger',
   'chigger', 'trigger', 'triggers', 'triggered', 'bigger', 'digger', 'vigor', 'rigor', 'figure', 'figures',
+  'chutney', 'chute', 'chutes', 'randy', 'because', 'bacon', 'match', 'machine', 'channel',
 ]);
 
 type PatternTuple = [RegExp, string, number, string];
+type HindiPatternTuple = [RegExp, string, number, string, string];
+
+// ========================================================
+// HINDI & HINGLISH MODERATION RULES (Roman Hindi / Slang)
+// Detects severe cusses, maternal/sister abuses, acronyms (tmkc, bsdk, bkl, mc, bc),
+// sexual/genital profanities, threats, and caste/identity slurs.
+// Harmless conversational Hindi (namaste, bhai, yaar, kya, acha) is strictly exempt.
+// ========================================================
+const HINDI_PATTERNS: HindiPatternTuple[] = [
+  // 1. Maternal / Sister Abuses & Major Acronyms (Critical Severity)
+  [
+    /\b(t+m+k+c+|m+k+c+|t+k+m+c+|b+k+l+|b+s+d+k+)\b/i,
+    'Severe Hindi abusive acronym (tmkc / mkc / bsdk / bkl)',
+    0.99,
+    'critical',
+    'harassment',
+  ],
+  [
+    /\b(t+e+r+i+\s+m+a+[aik]*\s*(?:k+i+|k+a+)?\s*c+h+[u0o]+t+|t+e+r+i+\s+m+a+k+i+\s*c+h+[u0o]+t+|t+e+r+i+\s+m+a+[aik]*\s*k+i+\s*c+h+[o0]{2}t+|t+e+r+i+\s*m+a+k+i+c+h+u+t+)\b/i,
+    'Severe Hindi maternal sexual abuse ("teri maki chut" / variant)',
+    0.99,
+    'critical',
+    'harassment',
+  ],
+  [
+    /\b(t+e+r+i+\s+m+a+[ai]*\s*k+a+\s*b+h+[o0]+s+[a-z]*|t+e+r+i+\s+m+a+[ai]*\s*k+i+|t+e+r+i+\s+m+a+[ai]*\s*k+a+|t+e+r+i+\s+m+a+[ai]*\s*c+h+[u0o]+d+w*a*|t+e+r+i+\s+a+m+m+[i1]+\s*k+i+\s*c+h+[u0o]+t+)\b/i,
+    'Severe Hindi maternal insult / abuse ("teri maa ka/ki...")',
+    0.98,
+    'critical',
+    'harassment',
+  ],
+  [
+    /\b(t+e+r+i+\s+b+h+e+n+\s*k+i+\s*c+h+[u0o]+t+|t+e+r+i+\s+b+e+h+e+n+\s*k+i+\s*c+h+[u0o]+t+|t+e+r+i+\s+b+e+h+a+n+\s*k+i+\s*c+h+[u0o]+t+)\b/i,
+    'Severe Hindi sister sexual abuse ("teri behen ki chut")',
+    0.99,
+    'critical',
+    'harassment',
+  ],
+  [
+    /\b(b+h+e+n+c+h+[o0]+d+[a-z]*|b+e+h+e+n+c+h+[o0]+d+[a-z]*|b+e+h+n+c+h+[o0]+d+[a-z]*|b+e+n+c+h+[o0]+d+[a-z]*|b+h+e+n+\s*c+h+[o0]+d+[a-z]*|b+e+h+e+n+\s*c+h+[o0]+d+[a-z]*)\b/i,
+    'Severe Hindi incest profanity ("bhenchod" / "behenchod")',
+    0.98,
+    'critical',
+    'profanity',
+  ],
+  [
+    /\b(m+a+d+a+r+c+h+[o0]+d+[a-z]*|m+a+d+e+r+c+h+[o0]+d+[a-z]*|m+a+d+a+r+\s*c+h+[o0]+d+[a-z]*|m+a+d+a+r+j+a+t+|m+a+d+a+r+z+a+t+|m+a+d+e+r+j+a+t+)\b/i,
+    'Severe Hindi maternal incest abuse ("madarchod")',
+    0.99,
+    'critical',
+    'harassment',
+  ],
+  [
+    /\b(b+h+e+n+\s*k+e+\s*l+[o0a]+d+[e3a]*|b+e+h+e+n+\s*k+e+\s*l+[o0a]+d+[e3a]*|b+h+e+n+\s*k+e+\s*t+a+k+k+[e3a]*|b+e+h+e+n+\s*k+e+\s*t+a+k+k+[e3a]*)\b/i,
+    'Severe Hindi familial genital abuse ("bhen ke lode")',
+    0.98,
+    'critical',
+    'insult',
+  ],
+  [
+    /\b(b+h+[o0]+s+[a-z]*d+i+k+[e3a]*|b+h+[o0]+s+d+i+k+[e3a]*|b+h+[o0]+s+a+d+i+\s*k+e+|b+h+[o0]+s+d+i+\s*k+e+|b+h+[o0]+s+[a-z]*d+[a-z]+)\b/i,
+    'Severe Hindi vulgar insult ("bhosdike" / "bhosda")',
+    0.96,
+    'high',
+    'insult',
+  ],
+
+  // 2. Hindi Direct Vulgar Insults & Genital Abuses (High Severity)
+  [
+    /\b(c+h+[u0o]+t+[i1]+y+[a4e3]+[a-z]*|c+h+[o0]{2}t+[i1]+y+[a4e3]+[a-z]*|c+h+u+t+y+[a4e3]+[a-z]*|c+h+u+t+i+y+a+p+a+)\b/i,
+    'Vulgar Hindi insult ("chutiya" / "chutiye")',
+    0.95,
+    'high',
+    'insult',
+  ],
+  [
+    /\b(g+a*a*n+d+u+[s]?|g+a*n+d+u+[s]?|g+a*a*n+d+\s*m+a+r+a+[a-z]*|g+a*a*n+d+\s*m+a+r+w+a+[a-z]*|g+a*n+d+f+a+t+[a-z]*|g+a*a*n+d+\s*f+a+t+i+)\b/i,
+    'Vulgar Hindi abusive profanity ("gandu" / "gaand mara")',
+    0.95,
+    'high',
+    'profanity',
+  ],
+  [
+    /\b(l+[o0a]+u*d+[a4e3]+[s]?|l+a+w+d+[a4e3]+[s]?|l+u+n+d+[s]?|l+[o0]+d+u+[s]?|l+u+n+d+\s*l+e+|l+a+u+d+e+\s*l+a+g+g+a+y+e+)\b/i,
+    'Vulgar Hindi genital profanity ("lauda" / "lode" / "lund")',
+    0.95,
+    'high',
+    'profanity',
+  ],
+  [
+    /\b(c+h+[u0]+t+|c+h+[o0]{2}t+|c+h+u+t+m+a+r+[i1]k+[a4e3]+)\b/i,
+    'Vulgar Hindi sexual profanity ("chut" / "choot")',
+    0.95,
+    'high',
+    'profanity',
+  ],
+  [
+    /\b(r+a*n+d+[i1]+[s]?|r+a*a*n+d+[i1]+[s]?|r+@+n+d+[i1]+[s]?|r+a*a*n+d+w+a+|c+h+[i1]+n+a+l+)\b/i,
+    'Derogatory Hindi misogynistic slur / insult ("randi" / "raand")',
+    0.96,
+    'high',
+    'insult',
+  ],
+  [
+    /\b(b+h+a+d+w+[a4e3]+|b+h+a+d+v+[a4e3]+|d+a+l+a+l+\s*k+e+)\b/i,
+    'Vulgar Hindi derogatory insult ("bhadwa" / "bhadwe")',
+    0.93,
+    'high',
+    'insult',
+  ],
+  [
+    /\b(h+a+r+a+m+i+[s]?|h+a+r+a+a+m+i+[s]?|h+a+r+a+m+z+a+d+[e3a]+|h+a+r+a+m+k+h+[o0]+r+)\b/i,
+    'Hostile Hindi insult ("harami" / "haramzada")',
+    0.91,
+    'medium',
+    'insult',
+  ],
+  [
+    /\b(j+h+a*a*t+u+[s]?|j+h+a*a*t+\s*k+e+\s*b+a+a*l+|j+h+a+t+u+)\b/i,
+    'Vulgar Hindi pubic insult ("jhaatu" / "jhatu")',
+    0.92,
+    'medium',
+    'insult',
+  ],
+  [
+    /\b(s+u+a+r+\s*k+e+\s*b+a+c+h+[a-z]*|k+u+t+t+e+\s*k+e+\s*b+a+c+h+[a-z]*|k+u+t+i+y+a+\s*k+e+)\b/i,
+    'Degrading Hindi insult ("suar ke bacche" / "kutte ke bacche")',
+    0.92,
+    'medium',
+    'insult',
+  ],
+  [
+    /\b(m+a+\s*c+h+u+d+w*a*|c+h+u+d+w+a+\s*l+e+|g+a*a*n+d+\s*d+e+d+e+|m+a+r+w+a+\s*l+e+)\b/i,
+    'Vulgar Hindi sexual degradation ("maa chuda" / "marwa le")',
+    0.95,
+    'high',
+    'profanity',
+  ],
+
+  // 3. Hindi Slurs (Identity, Caste, Homophobic, Transphobic - Critical Severity)
+  [
+    /\b(c+h+a+k+k+[a4e3]+[s]?|h+[i1]+j+r+[a4e3]+[s]?|m+e+e+t+h+a+\s*s+a+l+a+)\b/i,
+    'Transphobic / homophobic Hindi identity slur ("chakka" / "hijra")',
+    0.97,
+    'critical',
+    'slur',
+  ],
+  [
+    /\b(c+h+a+m+a+r+[s]?|b+h+a+n+g+[i1]+[s]?|k+a+t+w+[e3a]+[s]?)\b/i,
+    'Caste-based / religious Hindi hate speech slur ("chamar" / "bhangi")',
+    0.98,
+    'critical',
+    'slur',
+  ],
+
+  // 4. Hindi Death Threats & Physical Violence (Critical Severity)
+  [
+    /\b(j+a+a*n+\s*s+e+\s*m+a*a*r+\s*d+[u0]+n+g+[a4]*|m+a*a*r+\s*d+a+l+[u0]+n+g+[a4]*|g+h+a+r+\s*a+a*k+e+\s*m+a*a*r+[u0]+n+g+[a4]*|t+u+j+h+e+\s*k+a+a*t+\s*d+[u0]+n+g+[a4]*)\b/i,
+    'Hindi direct death threat / physical violence ("jaan se maar dunga")',
+    0.99,
+    'critical',
+    'threat',
+  ],
+  [
+    /\b(g+a*a*n+d+\s*t+[o0]+d+\s*d+[u0]+n+g+[a4]*|h+a+a*t+h+\s*p+a+i*r+\s*t+[o0]+d+\s*d+[u0]+n+g+[a4]*|p+e+l+\s*d+[u0]+n+g+[a4]*)\b/i,
+    'Hindi violent assault / battery threat ("gaand tod dunga" / "pel dunga")',
+    0.96,
+    'critical',
+    'threat',
+  ],
+
+  // 5. Short Hindi Abbreviation Slurs (Strict Word Boundaries to avoid English false positives)
+  [
+    /\b(b+c+|m+c+)\b(?!\s+(?:of|traffic|the|a|an|i\b|we\b|my\b|our\b|his\b|her\b|because\b))/i,
+    'Hindi abusive abbreviation (bc / mc - "bhenchod" / "madarchod")',
+    0.95,
+    'high',
+    'profanity',
+  ],
+];
 
 const SLUR_PATTERNS: PatternTuple[] = [
   [/\b(n+[i1l!|]+g+[e3a4o0u]*[rzkx]*s?|n+[i1l!|]+g+s?|n+[i1l!|]+g+l+[e3]+t+s?|w+[i1l!|]+g+g*[e3a4]+r*s?|w+[i1l!|]+g+z?)\b/i, 'Racial slur or slur evasion (n-word / wigga variant) detected', 0.99, 'critical'],
@@ -505,6 +686,23 @@ class RuleModerationEngine {
       }
     }
 
+    // 3. Comprehensive Hindi / Hinglish evaluation (tmkc, teri maki chut, bhenchod, bsdk, bkl, etc.)
+    for (const [pattern, reason, conf, sev, cat] of HINDI_PATTERNS) {
+      for (const targetText of targetsToCheck) {
+        pattern.lastIndex = 0;
+        const match = pattern.exec(targetText);
+        if (match) {
+          const matchedWord = match[0].toLowerCase().trim();
+          if (EXEMPT_WORDS.has(matchedWord)) continue;
+          categories.add(cat);
+          updateSeverity(sev);
+          updateConfidence(conf);
+          reasons.push(`${reason}: '${matchedWord}'`);
+          break;
+        }
+      }
+    }
+
     const isFlagged = categories.size > 0;
     return {
       is_flagged: isFlagged,
@@ -545,6 +743,37 @@ class LocalSemanticModerator {
     'loser': 0.65,
     'delete your account': 0.82,
     'stop talking': 0.55,
+    // Hindi / Hinglish Hostility & Severe Abuse Markers
+    'teri maki chut': 0.99,
+    'teri ma ki chut': 0.99,
+    'teri maa ki chut': 0.99,
+    'teri maa ki choot': 0.99,
+    'tmkc': 0.98,
+    'mkc': 0.96,
+    'bhenchod': 0.96,
+    'behenchod': 0.96,
+    'madarchod': 0.98,
+    'maderchod': 0.98,
+    'bhosdike': 0.96,
+    'bhosadike': 0.96,
+    'bsdk': 0.96,
+    'bkl': 0.95,
+    'chutiya': 0.92,
+    'chutiye': 0.92,
+    'gandu': 0.94,
+    'gaandu': 0.94,
+    'gaand mara': 0.95,
+    'gand mara': 0.95,
+    'randi': 0.96,
+    'bhadwa': 0.94,
+    'bhadwe': 0.94,
+    'harami': 0.90,
+    'laude': 0.93,
+    'lode': 0.93,
+    'lund': 0.92,
+    'chup kar bsdk': 0.97,
+    'maa chuda': 0.96,
+    'suar ke bacche': 0.92,
   };
 
   private threatMarkers: Record<string, number> = {
@@ -557,12 +786,26 @@ class LocalSemanticModerator {
     'beat you up': 0.88,
     'leak your': 0.90,
     'swat': 0.92,
+    // Hindi Threat & Violent Assault Markers
+    'jaan se maar dunga': 0.99,
+    'maar dalunga': 0.98,
+    'mar dalunga': 0.97,
+    'gaand tod dunga': 0.96,
+    'gand tod dunga': 0.96,
+    'ghar aake marunga': 0.96,
+    'pel dunga': 0.92,
   };
 
   private identityMarkers: Record<string, number> = {
     'go back to your country': 0.95,
     'people like you': 0.60,
     'your kind': 0.70,
+    // Hindi Identity & Slur Markers
+    'chakka': 0.97,
+    'hijra': 0.96,
+    'chamar': 0.98,
+    'bhangi': 0.98,
+    'katwe': 0.97,
   };
 
   analyzeMessage(message: string): AIModerationResult {
@@ -598,7 +841,7 @@ class LocalSemanticModerator {
       }
     }
 
-    const isTargeted = /\b(you\s*re|you\s*are|u\s*r|ur|you)\b/.test(msgLower);
+    const isTargeted = /\b(you\s*re|you\s*are|u\s*r|ur|you|tu\b|tera\b|teri\b|tujhe\b)\b/.test(msgLower);
     if (isTargeted && (toxicity > 0 || harassment > 0)) {
       personal_attack = Math.min(1.0, personal_attack + 0.15);
       harassment = Math.min(1.0, harassment + 0.10);
@@ -615,6 +858,14 @@ class LocalSemanticModerator {
     if (/\b(n+[i1l!|]+g+[e3a4o0u]*[rzkx]*s?|n+[i1l!|]+g+s?|w+[i1l!|]+g+g*[e3a4]+r*s?|f+[a4@]+g+g*[o0i1e3]*t*s?|r+[e3]+t+[a4@]+r+d+(?:ed|s)?)\b/.test(msgLower)) {
       identity_attack = Math.max(identity_attack, 0.96);
       toxicity = Math.max(toxicity, 0.95);
+      severe_toxicity = Math.max(severe_toxicity, 0.92);
+    }
+
+    // Explicit Hindi pattern amplification in AI Semantic Moderator
+    if (/\b(teri\s+maki?\s+chut|tmkc|mkc|bhenchod|behenchod|madarchod|bhosdike|bsdk|bkl|chutiya|gandu|randi|laude|lund)\b/.test(msgLower)) {
+      toxicity = Math.max(toxicity, 0.96);
+      personal_attack = Math.max(personal_attack, 0.95);
+      harassment = Math.max(harassment, 0.94);
       severe_toxicity = Math.max(severe_toxicity, 0.92);
     }
 
@@ -1444,6 +1695,7 @@ interface DiscordFetchJobState {
   status: 'idle' | 'fetching' | 'analyzing' | 'completed' | 'error';
   fetched: number;
   target: number;
+  mode: 'date' | 'limit';
   channelName: string;
   rateLimitWaitMs: number;
   stopRequested: boolean;
@@ -1455,6 +1707,7 @@ const discordFetchJob: DiscordFetchJobState = {
   status: 'idle',
   fetched: 0,
   target: 0,
+  mode: 'limit',
   channelName: '',
   rateLimitWaitMs: 0,
   stopRequested: false,
@@ -2969,6 +3222,7 @@ export async function startServer(customPort?: number): Promise<number> {
       status: discordFetchJob.status,
       fetched: discordFetchJob.fetched,
       target: discordFetchJob.target,
+      mode: discordFetchJob.mode,
       channel_name: discordFetchJob.channelName,
       rate_limit_wait_ms: discordFetchJob.rateLimitWaitMs,
       result: discordFetchJob.status === 'completed' ? discordFetchJob.result : null,
@@ -3255,9 +3509,12 @@ export async function startServer(customPort?: number): Promise<number> {
       { player: 'xX_Slayer_Xx', message: 'Join my duping discord right now discord.gg/freedupes or connect at 198.51.100.42:25565' },
       { player: 'DiamondMiner12', message: 'Anyone trading mending books at spawn?' },
       { player: 'ToxicKing99', message: 'you are a fucking idiot stfu worthless trash player' },
+      { player: 'DesiRider_', message: 'abe Steve teri maki chut noob tmkc' },
+      { player: 'Rohan_Pro', message: 'bhenchod chup kar bsdk diamonds wapas de' },
       { player: 'BuilderAlex', message: 'GG nice duel at warp arena!' },
       { player: 'ShadowRaider', message: 'ADMIN HELP SOMEONE IS GRIEFING SPAWN RIGHT NOW!!!!' },
       { player: 'NetherLord_', message: 'nobody wants you here delete your account loser' },
+      { player: 'DesiRider_', message: 'jaan se maar dunga tujhe chutiye' },
       { player: 'CrystalKnight', message: 'f.u.c.k you stupid r3tard get doxxed' },
       { player: 'SkyTrader99', message: 'Selling 64x enchanted golden apples at /ah SkyTrader99' },
     ];
@@ -3390,11 +3647,17 @@ export async function startServer(customPort?: number): Promise<number> {
         return;
       }
 
-      const maxMessages = Math.min(100000, Math.max(10, Number(limit) || 25000));
+      // Mutual exclusivity contract:
+      // If moderating via Date way (moderate_by === 'date' OR (start_date provided and moderate_by !== 'limit')):
+      // -> message limit is completely IRRELEVANT (unbounded up to 100,000 safe network ceiling, fetches all msgs in date range).
+      // If moderating via Message Limit way (moderate_by === 'limit' OR (no start_date and moderate_by !== 'date')):
+      // -> dates are completely IRRELEVANT (fetches newest N messages with zero date cutoff, ignores any start_date / end_date).
+      const isDateMode = req.body?.moderate_by === 'date' || (req.body?.moderate_by !== 'limit' && Boolean(start_date && String(start_date).trim()));
+      const maxMessages = isDateMode ? 100000 : Math.min(100000, Math.max(10, Number(limit) || 25000));
       let channelName = `discord-channel-${extractedChannelId}`;
 
-      const startDateMs = typeof start_date === 'string' && start_date.trim() ? new Date(`${start_date.trim()}T00:00:00Z`).getTime() : null;
-      const endDateMs = typeof end_date === 'string' && end_date.trim() ? new Date(`${end_date.trim()}T23:59:59.999Z`).getTime() : null;
+      const startDateMs = isDateMode && typeof start_date === 'string' && start_date.trim() ? new Date(`${start_date.trim()}T00:00:00Z`).getTime() : null;
+      const endDateMs = isDateMode && typeof end_date === 'string' && end_date.trim() ? new Date(`${end_date.trim()}T23:59:59.999Z`).getTime() : null;
 
       // Save token & selected channel to persistent session state
       sessionState.token = String(token).trim();
@@ -3433,7 +3696,7 @@ export async function startServer(customPort?: number): Promise<number> {
       );
 
       // Fetch first batch immediately to validate token and channel access
-      const firstBatchSize = Math.min(100, maxMessages);
+      const firstBatchSize = isDateMode ? 100 : Math.min(100, maxMessages);
       const firstUrl = `https://discord.com/api/v10/channels/${extractedChannelId}/messages?limit=${firstBatchSize}`;
       const firstRes = await fetchDiscordWithToken(firstUrl, String(token));
 
@@ -3456,7 +3719,7 @@ export async function startServer(customPort?: number): Promise<number> {
             hitCachedBoundary = true;
             break;
           }
-          if (startDateMs !== null && msg.timestamp) {
+          if (isDateMode && startDateMs !== null && msg.timestamp) {
             const mTime = new Date(msg.timestamp).getTime();
             if (!isNaN(mTime) && mTime < startDateMs) {
               hitCachedBoundary = true;
@@ -3471,22 +3734,29 @@ export async function startServer(customPort?: number): Promise<number> {
       const finalizeAndStoreWithMemory = (newlyFetched: any[]): LogParseResponse => {
         const reusedFromCache = existingCache ? existingCache.raw_discord_messages : [];
         let combinedRaw = [...newlyFetched, ...reusedFromCache];
-        if (startDateMs !== null || endDateMs !== null) {
-          combinedRaw = combinedRaw.filter((m: any) => {
-            if (!m.timestamp) return true;
-            const t = new Date(m.timestamp).getTime();
-            if (isNaN(t)) return true;
-            if (startDateMs !== null && t < startDateMs) return false;
-            if (endDateMs !== null && t > endDateMs) return false;
-            return true;
-          });
+
+        if (isDateMode) {
+          // Moderating via Date: Message limit is IRRELEVANT. Retain all messages in the date range.
+          if (startDateMs !== null || endDateMs !== null) {
+            combinedRaw = combinedRaw.filter((m: any) => {
+              if (!m.timestamp) return true;
+              const t = new Date(m.timestamp).getTime();
+              if (isNaN(t)) return true;
+              if (startDateMs !== null && t < startDateMs) return false;
+              if (endDateMs !== null && t > endDateMs) return false;
+              return true;
+            });
+          }
+        } else {
+          // Moderating via Message Limit: Dates are IRRELEVANT. Retain newest maxMessages.
+          combinedRaw = combinedRaw.slice(0, maxMessages);
         }
-        combinedRaw = combinedRaw.slice(0, Math.max(maxMessages, reusedFromCache.length));
+
         const syncedAt = new Date().toISOString().replace('T', ' ').slice(0, 19);
 
         const finalResult = processDiscordMessagesArray(
           channelName,
-          combinedRaw.slice(0, maxMessages),
+          isDateMode ? combinedRaw : combinedRaw.slice(0, maxMessages),
           extractedGuildId,
           extractedChannelId
         );
@@ -3529,10 +3799,10 @@ export async function startServer(customPort?: number): Promise<number> {
         while (
           !hitCachedBoundary &&
           !async_mode &&
-          newDiscordMessages.length < maxMessages &&
+          (isDateMode ? newDiscordMessages.length < 100000 : newDiscordMessages.length < maxMessages) &&
           beforeId
         ) {
-          const batchSize = Math.min(100, maxMessages - newDiscordMessages.length);
+          const batchSize = isDateMode ? 100 : Math.min(100, maxMessages - newDiscordMessages.length);
           const query = new URLSearchParams({ limit: String(batchSize), before: beforeId });
           const msgUrl = `https://discord.com/api/v10/channels/${extractedChannelId}/messages?${query.toString()}`;
           const msgRes = await fetchDiscordWithToken(msgUrl, String(token));
@@ -3544,7 +3814,7 @@ export async function startServer(customPort?: number): Promise<number> {
               hitCachedBoundary = true;
               break;
             }
-            if (startDateMs !== null && m.timestamp) {
+            if (isDateMode && startDateMs !== null && m.timestamp) {
               const mTime = new Date(m.timestamp).getTime();
               if (!isNaN(mTime) && mTime < startDateMs) {
                 hitCachedBoundary = true;
@@ -3562,10 +3832,11 @@ export async function startServer(customPort?: number): Promise<number> {
         return;
       }
 
-      // Start background pagination for large message limits (stops automatically as soon as it reaches cached memory!)
+      // Start background pagination for large message limits or deep date timeline
       discordFetchJob.status = 'fetching';
       discordFetchJob.fetched = newDiscordMessages.length + (existingCache?.raw_discord_messages.length || 0);
-      discordFetchJob.target = maxMessages;
+      discordFetchJob.target = isDateMode ? 0 : maxMessages;
+      discordFetchJob.mode = isDateMode ? 'date' : 'limit';
       discordFetchJob.channelName = channelName;
       discordFetchJob.rateLimitWaitMs = 0;
       discordFetchJob.stopRequested = false;
@@ -3576,7 +3847,8 @@ export async function startServer(customPort?: number): Promise<number> {
         async_job: true,
         status: 'fetching',
         fetched: discordFetchJob.fetched,
-        target: maxMessages,
+        target: isDateMode ? 0 : maxMessages,
+        mode: isDateMode ? 'date' : 'limit',
         channel_name: channelName,
       });
 
@@ -3586,12 +3858,15 @@ export async function startServer(customPort?: number): Promise<number> {
           let beforeId = firstBatch[firstBatch.length - 1]?.id;
           while (
             !hitCachedBoundary &&
-            newDiscordMessages.length + (existingCache?.raw_discord_messages.length || 0) < maxMessages &&
+            (isDateMode
+              ? newDiscordMessages.length < 100000
+              : newDiscordMessages.length + (existingCache?.raw_discord_messages.length || 0) < maxMessages) &&
             beforeId &&
             !discordFetchJob.stopRequested
           ) {
-            const remainingNeeded =
-              maxMessages - (newDiscordMessages.length + (existingCache?.raw_discord_messages.length || 0));
+            const remainingNeeded = isDateMode
+              ? 100
+              : maxMessages - (newDiscordMessages.length + (existingCache?.raw_discord_messages.length || 0));
             const batchSize = Math.min(100, Math.max(1, remainingNeeded));
             const query = new URLSearchParams({ limit: String(batchSize), before: beforeId });
             const msgUrl = `https://discord.com/api/v10/channels/${extractedChannelId}/messages?${query.toString()}`;
@@ -3614,7 +3889,7 @@ export async function startServer(customPort?: number): Promise<number> {
                 hitCachedBoundary = true;
                 break;
               }
-              if (startDateMs !== null && m.timestamp) {
+              if (isDateMode && startDateMs !== null && m.timestamp) {
                 const mTime = new Date(m.timestamp).getTime();
                 if (!isNaN(mTime) && mTime < startDateMs) {
                   hitCachedBoundary = true;
@@ -3783,6 +4058,13 @@ export async function startServer(customPort?: number): Promise<number> {
 [21:15:15 INFO]: Steve was slain by Griefer99
 [21:15:20 INFO]: [Mod] <Alex> Reporting Griefer99 for harassment and death threats.
 [21:15:25 INFO]: Steve issued server command: /mute Griefer99
+[21:15:28 INFO]: DesiRider[/127.0.0.1:54324] logged in with entity id 123
+[21:15:30 INFO]: <DesiRider> abe Steve teri maki chut noob tmkc
+[21:15:34 INFO]: <Steve> What did you just say?
+[21:15:38 INFO]: <DesiRider> bhenchod chup kar bsdk diamonds wapas de
+[21:15:42 INFO]: <Alex> Warning: abusive language in Hindi is also strictly moderated here
+[21:15:46 INFO]: <DesiRider> jaan se maar dunga tujhe chutiye
+[21:15:50 INFO]: Steve issued server command: /ban DesiRider Severe Hindi Harassment and Threats
 `;
     const result = parserManager.processFileContent('sample_minecraft.log', sampleContent);
     result.detected_gamemode = 'SMP';
