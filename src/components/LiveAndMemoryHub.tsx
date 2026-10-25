@@ -266,6 +266,7 @@ interface LiveModerationRadarViewProps {
     multiChannelBurst?: boolean
   ) => void;
   onInspectLiveAlert: (item: LiveFeedAlertItem, initialMode?: 'log' | 'request') => void;
+  onBatchPunishLiveAlerts?: (alerts: LiveFeedAlertItem[]) => void;
 }
 
 export const LiveModerationRadarView: React.FC<LiveModerationRadarViewProps> = ({
@@ -278,6 +279,7 @@ export const LiveModerationRadarView: React.FC<LiveModerationRadarViewProps> = (
   onClearLiveAlerts,
   onSimulateLiveEvent,
   onInspectLiveAlert,
+  onBatchPunishLiveAlerts,
 }) => {
   const [monitorTarget, setMonitorTarget] = useState<string>('all');
   const [pollIntervalMs, setPollIntervalMs] = useState<number>(liveStatus?.poll_interval_ms || 4000);
@@ -791,7 +793,7 @@ export const LiveModerationRadarView: React.FC<LiveModerationRadarViewProps> = (
       >
         {/* Priority Column: Real-Time Flagged Alerts Across All Channels */}
         <div className="preview-container">
-          <div className="preview-header">
+          <div className="preview-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div className="preview-title-box">
               <Bell size={16} style={{ color: 'var(--sev-critical)' }} />
               <h3 className="preview-title">
@@ -800,6 +802,27 @@ export const LiveModerationRadarView: React.FC<LiveModerationRadarViewProps> = (
               </h3>
               <span className="count-text">{filteredAlerts.length} active alerts</span>
             </div>
+
+            {filteredAlerts.length > 0 && onBatchPunishLiveAlerts && (
+              <button
+                type="button"
+                className="btn-danger"
+                style={{
+                  height: '28px',
+                  padding: '0 0.65rem',
+                  fontSize: '0.72rem',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.35rem',
+                  fontWeight: 700,
+                }}
+                onClick={() => onBatchPunishLiveAlerts(filteredAlerts)}
+                title="Launch batch punishment speed runner for all active live alerts"
+              >
+                <Zap size={12} />
+                <span>⚡ Bulk Punish All ({filteredAlerts.length})</span>
+              </button>
+            )}
           </div>
 
           <div

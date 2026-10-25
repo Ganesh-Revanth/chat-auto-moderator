@@ -17,6 +17,7 @@ import {
   Check,
   Calendar,
   X,
+  Zap,
 } from 'lucide-react';
 import type {
   LogParseResponse,
@@ -43,6 +44,7 @@ import {
 import { LightRays } from './components/LightRays';
 import { CustomCursor } from './components/CustomCursor';
 import { BrandLogoMark } from './components/BrandLogoMark';
+import { BatchPunishmentModal } from './components/BatchPunishmentModal';
 
 const API_BASE_URL = '';
 
@@ -716,6 +718,9 @@ export const App: React.FC = () => {
 
   // Batch Selection State
   const [selectedMsgIds, setSelectedMsgIds] = useState<number[]>([]);
+  const [isBatchPunishmentOpen, setIsBatchPunishmentOpen] = useState<boolean>(false);
+  const [batchPunishmentMode, setBatchPunishmentMode] = useState<'log' | 'request'>('request');
+  const [batchTargetMessages, setBatchTargetMessages] = useState<MessageRecord[]>([]);
 
   // Case Inspector State (Split-Pane Docked by default, expandable to modal)
   const [activeMessage, setActiveMessage] = useState<MessageRecord | null>(null);
@@ -1168,7 +1173,8 @@ export const App: React.FC = () => {
 
   const handleLogPunishment = async (
     autoSendDiscord: boolean,
-    overrideActionMode?: 'log' | 'request'
+    overrideActionMode?: 'log' | 'request',
+    andStepNext?: boolean
   ) => {
     if (!activeMessage) return;
     const effectiveMode: 'log' | 'request' = overrideActionMode || staffActionMode;
@@ -1251,6 +1257,17 @@ export const App: React.FC = () => {
         });
         handleCopyText('slash-cmd', record.command_string);
       }
+
+      if (andStepNext) {
+        const nextFlagged = filteredMessages.find(
+          (m) => m.id !== activeMessage.id && m.is_flagged && m.review_status === 'unreviewed'
+        ) || filteredMessages.find((m) => m.id !== activeMessage.id && m.is_flagged);
+        if (nextFlagged) {
+          setTimeout(() => {
+            handleOpenMessageModal(nextFlagged, effectiveMode);
+          }, 350);
+        }
+      }
     } catch (e: any) {
       setPunishmentFeedback({
         type: 'error',
@@ -1259,6 +1276,72 @@ export const App: React.FC = () => {
     } finally {
       setIsSubmittingPunishment(false);
     }
+  };
+
+  const handleOpenBatchPunishment = (
+    initialMode: 'log' | 'request' = 'request',
+    explicitMsgs?: MessageRecord[]
+  ) => {
+    let targets: MessageRecord[] = [];
+    if (explicitMsgs && explicitMsgs.length > 0) {
+      targets = explicitMsgs;
+    } else if (selectedMsgIds.length > 0) {
+      targets = filteredMessages.filter((m) => selectedMsgIds.includes(m.id));
+    } else {
+      targets = filteredMessages.filter((m) => m.is_flagged);
+    }
+
+    if (targets.length === 0) {
+      targets = filteredMessages.slice(0, 10);
+    }
+
+    setBatchTargetMessages(targets);
+    setBatchPunishmentMode(initialMode);
+    setIsBatchPunishmentOpen(true);
+  };
+
+  const handleSelectAllFlagged = () => {
+    const flaggedIds = filteredMessages.filter((m) => m.is_flagged).map((m) => m.id);
+    setSelectedMsgIds(flaggedIds);
+  };
+
+  const handleBatchPunishmentComplete = (createdRecords: PunishmentRecord[]) => {
+    if (!createdRecords || createdRecords.length === 0) return;
+    setPunishments((prev) => [...createdRecords, ...prev]);
+
+    const recordMap = new Map<number, PunishmentRecord>();
+    for (const r of createdRecords) {
+      if (typeof r.message_id === 'number') {
+        recordMap.set(r.message_id, r);
+      }
+    }
+
+    setMessages((prev) =>
+      prev.map((m) => {
+        const rec = recordMap.get(m.id);
+        if (rec) {
+          const modeTag = (rec.staff_action_mode || 'log').toUpperCase();
+          return {
+            ...m,
+            review_status: 'confirmed',
+            moderator_notes: `[${rec.case_id}] (${modeTag}) ${rec.punishment_type} (${rec.duration}) - ${rec.reason} [${rec.gamemode}]`,
+          };
+        }
+        return m;
+      })
+    );
+
+    if (activeMessage && recordMap.has(activeMessage.id)) {
+      const rec = recordMap.get(activeMessage.id)!;
+      const modeTag = (rec.staff_action_mode || 'log').toUpperCase();
+      setActiveMessage({
+        ...activeMessage,
+        review_status: 'confirmed',
+        moderator_notes: `[${rec.case_id}] (${modeTag}) ${rec.punishment_type} (${rec.duration}) - ${rec.reason} [${rec.gamemode}]`,
+      });
+    }
+
+    setSelectedMsgIds([]);
   };
 
   const handleDeletePunishment = async (id: number) => {
@@ -1391,6 +1474,12 @@ export const App: React.FC = () => {
       } else if (activeMessage && (e.key === 'r' || e.key === 'R')) {
         e.preventDefault();
         handleModeratorAction('reviewed');
+      } else if (activeMessage && (e.key === 'p' || e.key === 'P')) {
+        e.preventDefault();
+        handleLogPunishment(Boolean(discordToken.trim()), staffActionMode, true);
+      } else if (e.key === 'b' || e.key === 'B') {
+        e.preventDefault();
+        handleOpenBatchPunishment('request');
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -1404,6 +1493,10 @@ export const App: React.FC = () => {
     handleModeratorAction,
     handleOpenMessageModal,
     handleStepCase,
+    handleLogPunishment,
+    handleOpenBatchPunishment,
+    staffActionMode,
+    discordToken,
   ]);
 
   const toggleSelectMessage = (id: number) => {
@@ -3469,37 +3562,86 @@ export const App: React.FC = () => {
                         </div>
 
                         {/* Inline Table Date Range Filter */}
-                        <div className="date-filter-box" title="Filter from specific date to present">
+                        <div className="date-filter-box" title="Filter from specific date to present (Message limit becomes irrelevant)">
                           <Calendar size={13} style={{ color: startDateFilter ? 'var(--accent-brand)' : 'var(--text-muted)', flexShrink: 0 }} />
                           <span style={{ fontSize: '0.72rem', fontWeight: 600 }}>Date:</span>
                           <input
                             type="date"
                             className="date-filter-input"
                             value={startDateFilter}
-                            onChange={(e) => setStartDateFilter(e.target.value)}
+                            onChange={(e) => handleSelectDateScope(e.target.value, endDateFilter)}
                             title="Filter flags from this date to present"
                           />
                           {startDateFilter && (
                             <button
                               type="button"
                               className="date-clear-btn"
-                              onClick={() => setStartDateFilter('')}
-                              title="Clear date filter"
+                              onClick={() => handleSelectLimitScope()}
+                              title="Switch back to message limit mode (dates irrelevant)"
                             >
                               <X size={12} />
                             </button>
                           )}
                         </div>
+
+                        {/* Quick One-Click Flagged Batch Action Trigger */}
+                        {filteredMessages.some((m) => m.is_flagged) && (
+                          <button
+                            type="button"
+                            className="btn-danger"
+                            style={{
+                              height: '30px',
+                              fontSize: '0.72rem',
+                              fontWeight: 700,
+                              padding: '0 0.75rem',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.35rem',
+                              whiteSpace: 'nowrap',
+                            }}
+                            onClick={() => handleOpenBatchPunishment('request')}
+                            title="Open fast batch runner to request punishments for all flagged violations"
+                          >
+                            <Zap size={13} />
+                            <span>⚡ Batch Punish Flags ({filteredMessages.filter((m) => m.is_flagged).length})</span>
+                          </button>
+                        )}
                       </div>
                     </div>
 
                     {/* Multi-Row Batch Disposition Bar */}
                     {selectedMsgIds.length > 0 && (
-                      <div className="batch-action-bar">
-                        <div style={{ fontSize: '0.78rem', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
-                          {selectedMsgIds.length} message(s) selected for batch disposition
+                      <div className="batch-action-bar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <span className="standby-badge-live" style={{ background: 'rgba(239, 68, 68, 0.15)', color: 'var(--sev-critical)' }}>
+                            <Zap size={13} />
+                            <span>SPEED-RUNNER</span>
+                          </span>
+                          <div style={{ fontSize: '0.78rem', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
+                            {selectedMsgIds.length} message(s) selected
+                          </div>
                         </div>
-                        <div className="action-btn-group">
+                        <div className="action-btn-group" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+                          <button
+                            type="button"
+                            className="btn-danger"
+                            style={{ height: '30px', fontSize: '0.73rem', fontWeight: 700, padding: '0 0.75rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                            onClick={() => handleOpenBatchPunishment('request')}
+                            title="Open fast batch runner to request punishments for all selected players (/staff request)"
+                          >
+                            <Zap size={13} />
+                            <span>⚡ Batch Request Punishments</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            style={{ height: '30px', fontSize: '0.73rem', fontWeight: 700, padding: '0 0.75rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                            onClick={() => handleOpenBatchPunishment('log')}
+                            title="Open fast batch runner to log punishments for all selected players (/staff log)"
+                          >
+                            <Zap size={13} />
+                            <span>⚡ Batch Log Punishments</span>
+                          </button>
                           <button
                             type="button"
                             className="btn-action confirm"
@@ -3512,14 +3654,14 @@ export const App: React.FC = () => {
                             className="btn-action"
                             onClick={() => handleBatchModeratorAction('false_positive')}
                           >
-                            Batch False Positive
+                            False Positive
                           </button>
                           <button
                             type="button"
                             className="btn-action"
                             onClick={() => handleBatchModeratorAction('ignored')}
                           >
-                            Batch Ignore
+                            Ignore
                           </button>
                           <button
                             type="button"
@@ -3536,21 +3678,42 @@ export const App: React.FC = () => {
                       <table className="log-table" id="parsed-records-table">
                         <thead>
                           <tr>
-                            <th style={{ width: '36px' }}>
-                              <button
-                                type="button"
-                                className="btn-ghost"
-                                style={{ padding: 0, height: '20px' }}
-                                onClick={toggleSelectAllOnPage}
-                                title="Select all visible rows"
-                              >
-                                {selectedMsgIds.length > 0 &&
-                                selectedMsgIds.length === filteredMessages.length ? (
-                                  <CheckSquare size={14} />
-                                ) : (
-                                  <Square size={14} />
+                            <th style={{ width: '60px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                                <button
+                                  type="button"
+                                  className="btn-ghost"
+                                  style={{ padding: 0, height: '20px' }}
+                                  onClick={toggleSelectAllOnPage}
+                                  title="Select all visible rows"
+                                >
+                                  {selectedMsgIds.length > 0 &&
+                                  selectedMsgIds.length === filteredMessages.length ? (
+                                    <CheckSquare size={14} />
+                                  ) : (
+                                    <Square size={14} />
+                                  )}
+                                </button>
+                                {filteredMessages.some((m) => m.is_flagged) && (
+                                  <button
+                                    type="button"
+                                    className="btn-ghost"
+                                    style={{
+                                      padding: '0 0.25rem',
+                                      height: '20px',
+                                      fontSize: '0.62rem',
+                                      color: 'var(--sev-critical)',
+                                      fontFamily: 'var(--font-mono)',
+                                      border: '1px solid var(--border-subtle)',
+                                      borderRadius: '3px',
+                                    }}
+                                    onClick={handleSelectAllFlagged}
+                                    title="Select all flagged violations on this page"
+                                  >
+                                    Flags
+                                  </button>
                                 )}
-                              </button>
+                              </div>
                             </th>
                             <th className="col-line">Line</th>
                             <th className="col-time">Timestamp</th>
@@ -4066,6 +4229,20 @@ export const App: React.FC = () => {
           }}
         />
       )}
+
+      {/* DEDICATED BATCH PUNISHMENT SPEED-RUNNER MODAL */}
+      <BatchPunishmentModal
+        isOpen={isBatchPunishmentOpen}
+        onClose={() => setIsBatchPunishmentOpen(false)}
+        messages={batchTargetMessages}
+        initialMode={batchPunishmentMode}
+        discordToken={discordToken}
+        staffCommandChannelId={staffCommandChannelId}
+        onUpdateStaffChannelId={setStaffCommandChannelId}
+        detectedGamemode={data?.detected_gamemode || 'SMP'}
+        apiBaseUrl={API_BASE_URL}
+        onComplete={handleBatchPunishmentComplete}
+      />
     </div>
   );
 };

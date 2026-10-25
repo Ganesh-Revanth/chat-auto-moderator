@@ -3208,6 +3208,131 @@ export async function startServer(customPort?: number): Promise<number> {
     }
   });
 
+  app.post('/api/v1/punishments/batch', async (req, res) => {
+    try {
+      const {
+        punishments = [],
+        auto_send_discord = false,
+        token = '',
+        staff_channel_id = '',
+      } = req.body || {};
+
+      if (!Array.isArray(punishments) || punishments.length === 0) {
+        res.status(400).json({ detail: 'No punishments provided in batch request.' });
+        return;
+      }
+
+      const createdRecords: PunishmentRecord[] = [];
+      const errors: { index: number; username: string; error: string }[] = [];
+
+      for (let i = 0; i < punishments.length; i++) {
+        const item = punishments[i];
+        const cleanUser = String(item.username || '').trim();
+        const cleanType = String(item.punishment_type || 'Mute').trim();
+        const cleanDuration = String(item.duration || '1d').trim();
+        const cleanReason = String(item.reason || 'Chat violation').trim();
+        const cleanGamemode = String(item.gamemode || 'SMP').trim();
+        const cleanEvidence = String(item.evidence_links || 'discord.com').trim();
+        const cleanExcerpt = String(item.message_excerpt || '').trim();
+        const cleanSeverity = String(item.severity || 'medium').trim();
+        const cleanActionMode: 'log' | 'request' =
+          item.staff_action_mode === 'request' ? 'request' : 'log';
+
+        if (!cleanUser) {
+          errors.push({ index: i, username: 'unknown', error: 'Missing username' });
+          continue;
+        }
+
+        const id = nextPunishmentId++;
+        const caseId =
+          cleanActionMode === 'request'
+            ? `REQ-${String(id).padStart(4, '0')}`
+            : `CASE-${String(id).padStart(4, '0')}`;
+        const commandString = `/staff ${cleanActionMode} punishment punishment_type:${cleanType} duration:${cleanDuration} evidence_links:${cleanEvidence}`;
+
+        let discordStatus: 'logged_locally' | 'sent_to_discord' | 'failed' = 'logged_locally';
+        let discordDetail =
+          cleanActionMode === 'request'
+            ? 'Saved to Punishment Request Ledger.'
+            : 'Saved to Punishment Log.';
+
+        if (auto_send_discord) {
+          if (!token || !staff_channel_id) {
+            discordStatus = 'failed';
+            discordDetail =
+              'Discord Token and Staff Command Channel ID are required to auto-submit to Discord.';
+          } else {
+            try {
+              if (i > 0) {
+                // Short pause to prevent Discord rate-limiting on batch interactions
+                await new Promise((r) => setTimeout(r, 350));
+              }
+              const dispatchRes = await executeDiscordStaffLogInteraction({
+                token: String(token),
+                staffChannelId: String(staff_channel_id),
+                actionMode: cleanActionMode,
+                punishmentType: cleanType,
+                duration: cleanDuration,
+                evidenceLinks: cleanEvidence,
+                username: cleanUser,
+                reason: cleanReason,
+                gamemode: cleanGamemode,
+              });
+              discordStatus = dispatchRes.ok ? 'sent_to_discord' : 'failed';
+              discordDetail = dispatchRes.detail;
+            } catch (dispatchErr: any) {
+              discordStatus = 'failed';
+              discordDetail = dispatchErr?.message || 'Failed to dispatch Discord interaction.';
+            }
+          }
+        }
+
+        if (typeof item.message_id === 'number') {
+          try {
+            parserManager.updateMessageAction(
+              item.message_id,
+              'confirmed',
+              `[${caseId}] (${cleanActionMode.toUpperCase()}) ${cleanType} (${cleanDuration}) - ${cleanReason} [${cleanGamemode}]`
+            );
+          } catch {
+            // ignore
+          }
+        }
+
+        const record: PunishmentRecord = {
+          id,
+          case_id: caseId,
+          created_at: new Date().toISOString().replace('T', ' ').slice(0, 19),
+          message_id: typeof item.message_id === 'number' ? item.message_id : undefined,
+          staff_action_mode: cleanActionMode,
+          username: cleanUser,
+          punishment_type: cleanType,
+          duration: cleanDuration,
+          reason: cleanReason,
+          gamemode: cleanGamemode,
+          evidence_links: cleanEvidence,
+          message_excerpt: cleanExcerpt,
+          severity: cleanSeverity,
+          command_string: commandString,
+          discord_status: discordStatus,
+          discord_detail: discordDetail,
+        };
+
+        punishmentsStore.unshift(record);
+        createdRecords.push(record);
+      }
+
+      res.json({
+        success: true,
+        count: createdRecords.length,
+        errors,
+        records: createdRecords,
+      });
+    } catch (err: any) {
+      res.status(500).json({ detail: err?.message || 'Failed to process batch punishments.' });
+    }
+  });
+
   app.delete('/api/v1/punishments/:id', (req, res) => {
     const id = parseInt(req.params.id, 10);
     const idx = punishmentsStore.findIndex((p) => p.id === id);

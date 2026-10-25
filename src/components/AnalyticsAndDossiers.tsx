@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Copy, Trash2, X, Search } from 'lucide-react';
+import { Copy, Trash2, X, Search, Zap } from 'lucide-react';
 import type { LogParseResponse, MessageRecord, PlayerProfile, PunishmentRecord } from '../types';
 
 interface PlayersDossiersViewProps {
@@ -502,6 +502,7 @@ interface PlayerDossierModalProps {
   onClose: () => void;
   onFilterQueueByPlayer: (username: string) => void;
   onSelectMessageFromDossier: (msg: MessageRecord) => void;
+  onBatchPunishPlayer?: (messages: MessageRecord[]) => void;
 }
 
 export const PlayerDossierModal: React.FC<PlayerDossierModalProps> = ({
@@ -510,6 +511,7 @@ export const PlayerDossierModal: React.FC<PlayerDossierModalProps> = ({
   onClose,
   onFilterQueueByPlayer,
   onSelectMessageFromDossier,
+  onBatchPunishPlayer,
 }) => {
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -613,18 +615,38 @@ export const PlayerDossierModal: React.FC<PlayerDossierModalProps> = ({
           </div>
         </div>
 
-        <div className="modal-footer">
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={() => onFilterQueueByPlayer(profile.username)}
-          >
-            Filter Queue by {profile.username}
-          </button>
+        <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '0.45rem' }}>
+            {messages.some((m) => m.is_flagged) && onBatchPunishPlayer && (
+              <button
+                type="button"
+                className="btn-danger"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontWeight: 700 }}
+                onClick={() => {
+                  onBatchPunishPlayer(messages.filter((m) => m.is_flagged));
+                  onClose();
+                }}
+                title="Launch batch punishment speed runner for all flagged messages from this player"
+              >
+                <Zap size={13} />
+                ⚡ Punish All {messages.filter((m) => m.is_flagged).length} Violations
+              </button>
+            )}
+          </div>
 
-          <button type="button" className="btn-secondary" onClick={onClose}>
-            Close
-          </button>
+          <div style={{ display: 'flex', gap: '0.45rem' }}>
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => onFilterQueueByPlayer(profile.username)}
+            >
+              Filter Queue by {profile.username}
+            </button>
+
+            <button type="button" className="btn-secondary" onClick={onClose}>
+              Close
+            </button>
+          </div>
         </div>
       </div>
     </div>

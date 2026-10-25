@@ -10,6 +10,7 @@ import {
   Maximize2,
   Minimize2,
   ExternalLink,
+  Zap,
 } from 'lucide-react';
 import type { MessageRecord, ContextAnalysisResult } from '../types';
 
@@ -71,7 +72,11 @@ interface CaseInspectorPanelProps {
   punishmentFeedback: { type: 'success' | 'error'; text: string } | null;
   copiedKey: string | null;
   onCopyText: (key: string, text: string) => void;
-  onLogPunishment: (autoSendDiscord: boolean, overrideActionMode?: 'log' | 'request') => void;
+  onLogPunishment: (
+    autoSendDiscord: boolean,
+    overrideActionMode?: 'log' | 'request',
+    andStepNext?: boolean
+  ) => void;
   onModeratorAction: (action: 'confirmed' | 'false_positive' | 'reviewed' | 'ignored') => void;
   onClose: () => void;
   onStepCase: (direction: -1 | 1) => void;
@@ -164,7 +169,27 @@ export const CaseInspectorPanel: React.FC<CaseInspectorPanelProps> = ({
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+          <button
+            type="button"
+            className="btn-primary"
+            style={{
+              height: '28px',
+              padding: '0 0.6rem',
+              fontSize: '0.71rem',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.3rem',
+              background: 'var(--accent-primary)',
+              color: 'var(--accent-primary-text)',
+            }}
+            disabled={isSubmittingPunishment}
+            onClick={() => onLogPunishment(false, staffActionMode, true)}
+            title="Log punishment to Ledger & instantly advance to next flagged case (Shortcut: P)"
+          >
+            <Zap size={12} />
+            <span>Fast Log &amp; Next [P]</span>
+          </button>
           <button
             type="button"
             className="close-btn"
@@ -579,13 +604,13 @@ export const CaseInspectorPanel: React.FC<CaseInspectorPanelProps> = ({
             />
           </div>
 
-          <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap', marginBottom: '0.45rem' }}>
             <button
               type="button"
               className="btn-secondary"
               style={{ flex: 1 }}
               disabled={isSubmittingPunishment}
-              onClick={() => onLogPunishment(false, staffActionMode)}
+              onClick={() => onLogPunishment(false, staffActionMode, false)}
             >
               <Copy size={13} />
               {isRequestMode ? 'Request & Copy' : 'Log & Copy'}
@@ -596,7 +621,7 @@ export const CaseInspectorPanel: React.FC<CaseInspectorPanelProps> = ({
               className={isRequestMode ? 'btn-danger' : 'btn-primary'}
               style={{ flex: 1.4 }}
               disabled={isSubmittingPunishment}
-              onClick={() => onLogPunishment(true, staffActionMode)}
+              onClick={() => onLogPunishment(true, staffActionMode, false)}
               title={`Automatically sends ${activeSlashCmd} and submits the follow-up modal (username, reason, gamemode) via your Discord Token`}
             >
               <Send size={13} />
@@ -607,6 +632,30 @@ export const CaseInspectorPanel: React.FC<CaseInspectorPanelProps> = ({
                 : 'Auto-Log in Discord'}
             </button>
           </div>
+
+          {/* Seamless Speed-Runner Button */}
+          <button
+            type="button"
+            className="btn-primary"
+            style={{
+              width: '100%',
+              height: '38px',
+              background: 'linear-gradient(135deg, var(--accent-primary) 0%, rgba(56, 189, 248, 0.85) 100%)',
+              color: '#000000',
+              fontWeight: 800,
+              fontSize: '0.78rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '0.45rem',
+            }}
+            disabled={isSubmittingPunishment}
+            onClick={() => onLogPunishment(true, staffActionMode, true)}
+            title="Auto-dispatch punishment via Discord Token and immediately advance to next flagged case (Keyboard shortcut: P)"
+          >
+            <Zap size={14} />
+            <span>⚡ Instant Auto-Dispatch &amp; Next Case [P]</span>
+          </button>
 
           {punishmentFeedback && (
             <div
