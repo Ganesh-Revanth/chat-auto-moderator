@@ -267,6 +267,7 @@ interface LiveModerationRadarViewProps {
   ) => void;
   onInspectLiveAlert: (item: LiveFeedAlertItem, initialMode?: 'log' | 'request') => void;
   onBatchPunishLiveAlerts?: (alerts: LiveFeedAlertItem[]) => void;
+  showTestTools?: boolean;
 }
 
 export const LiveModerationRadarView: React.FC<LiveModerationRadarViewProps> = ({
@@ -280,6 +281,7 @@ export const LiveModerationRadarView: React.FC<LiveModerationRadarViewProps> = (
   onSimulateLiveEvent,
   onInspectLiveAlert,
   onBatchPunishLiveAlerts,
+  showTestTools = false,
 }) => {
   const [monitorTarget, setMonitorTarget] = useState<string>('all');
   const [pollIntervalMs, setPollIntervalMs] = useState<number>(liveStatus?.poll_interval_ms || 4000);
@@ -436,6 +438,8 @@ export const LiveModerationRadarView: React.FC<LiveModerationRadarViewProps> = (
               <span>{soundAlertsEnabled ? 'Audio Chime: ON' : 'Audio Chime: OFF'}</span>
             </button>
 
+            {showTestTools && (
+              <>
             <button
               type="button"
               className="btn-secondary"
@@ -462,6 +466,8 @@ export const LiveModerationRadarView: React.FC<LiveModerationRadarViewProps> = (
             >
               <Zap size={14} /> +1 Live Event
             </button>
+              </>
+            )}
 
             {(recentMessages.length > 0 || activeAlerts.length > 0) && (
               <button
@@ -744,6 +750,7 @@ export const LiveModerationRadarView: React.FC<LiveModerationRadarViewProps> = (
             )}
           </div>
 
+          {showTestTools && (
           <form
             style={{ display: 'flex', gap: '0.45rem', alignItems: 'center', flexWrap: 'wrap' }}
             onSubmit={(e) => {
@@ -779,6 +786,7 @@ export const LiveModerationRadarView: React.FC<LiveModerationRadarViewProps> = (
               Test Message
             </button>
           </form>
+          )}
         </div>
       </div>
 
@@ -786,7 +794,7 @@ export const LiveModerationRadarView: React.FC<LiveModerationRadarViewProps> = (
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(640px, 1fr))',
           gap: '1.25rem',
           alignItems: 'start',
         }}

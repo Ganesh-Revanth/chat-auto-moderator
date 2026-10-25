@@ -1,17 +1,5 @@
 import React from 'react';
-import {
-  X,
-  ChevronUp,
-  ChevronDown,
-  Copy,
-  Send,
-  Link,
-  Terminal,
-  Maximize2,
-  Minimize2,
-  ExternalLink,
-  Zap,
-} from 'lucide-react';
+import { X, ChevronUp, ChevronDown, Copy, Send, ExternalLink, Zap } from 'lucide-react';
 import type { MessageRecord, ContextAnalysisResult } from '../types';
 
 const LEET_PREVIEW_MAP: Record<string, string> = {
@@ -82,10 +70,39 @@ interface CaseInspectorPanelProps {
   onStepCase: (direction: -1 | 1) => void;
   canStepPrev: boolean;
   canStepNext: boolean;
-  isExpandedModal: boolean;
-  onToggleExpandModal: () => void;
+  /** Render as a floating sheet (used from the Live view) instead of the inline detail pane. */
+  overlay?: boolean;
   onOpenPlayerByName: (username: string) => void;
 }
+
+
+const Ring: React.FC<{ value: number; label: string }> = ({ value, label }) => {
+  const pct = Math.max(0, Math.min(1, value));
+  const r = 15;
+  const c = 2 * Math.PI * r;
+  return (
+    <div className="score">
+      <svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true">
+        <circle cx="20" cy="20" r={r} fill="none" stroke="var(--line)" strokeWidth="4" />
+        <circle
+          className="kring"
+          cx="20"
+          cy="20"
+          r={r}
+          fill="none"
+          strokeWidth="4"
+          strokeLinecap="round"
+          strokeDasharray={`${pct * c} ${c}`}
+          transform="rotate(-90 20 20)"
+        />
+      </svg>
+      <div>
+        <b className="num">{Math.round(pct * 100)}%</b>
+        <small>{label}</small>
+      </div>
+    </div>
+  );
+};
 
 export const CaseInspectorPanel: React.FC<CaseInspectorPanelProps> = ({
   activeMessage,
@@ -119,555 +136,372 @@ export const CaseInspectorPanel: React.FC<CaseInspectorPanelProps> = ({
   onStepCase,
   canStepPrev,
   canStepNext,
-  isExpandedModal,
-  onToggleExpandModal,
+  overlay = false,
   onOpenPlayerByName,
 }) => {
   const isRequestMode = staffActionMode === 'request';
   const activeSlashCmd = isRequestMode ? '/staff request punishment' : '/staff log punishment';
+  const sev = activeMessage.is_flagged ? activeMessage.severity : 'none';
   const deobfuscatedText = computeDeobfuscatedPreview(activeMessage.message);
   const showDeobfuscatedDiff =
-    deobfuscatedText &&
-    deobfuscatedText !== activeMessage.message.toLowerCase().trim();
+    deobfuscatedText && deobfuscatedText !== activeMessage.message.toLowerCase().trim();
+  const commandPreview = `${activeSlashCmd} punishment_type:${punishmentType} duration:${
+    punishmentDuration || (isRequestMode ? 'Permanent' : '1d')
+  } evidence_links:${punishmentEvidenceLinks}`;
+  const durations = isRequestMode
+    ? ['Permanent', '30d', '14d', '7d', '3d', '1d', '12h']
+    : ['30m', '1h', '12h', '1d', '7d', '30d', 'Permanent'];
+  const status = activeMessage.review_status;
 
-  const inspectorInner = (
-    <>
-      <div className="inspector-header">
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <h3 style={{ fontSize: '0.96rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-              Case Inspector · Line #{activeMessage.line_number}
-            </h3>
-            <span className={`severity-label ${activeMessage.is_flagged ? activeMessage.severity : 'clean'}`}>
-              · {activeMessage.is_flagged ? activeMessage.severity : 'clean'} ({(activeMessage.overall_score * 100).toFixed(0)}%)
-            </span>
-          </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', marginTop: '0.15rem', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-            <button
-              type="button"
-              className="player-link-btn"
-              onClick={() => onOpenPlayerByName(activeMessage.player)}
-              title="Open Player Dossier"
-            >
-              {activeMessage.player}
-            </button>
-            <span className="metadata-sep">·</span>
-            <span>{activeMessage.timestamp}</span>
-            {activeMessage.discord_message_url && (
-              <>
-                <span className="metadata-sep">·</span>
+  const inner = (
+    <section className={`case k-${sev}`} aria-label="Case" style={overlay ? { height: '100%' } : undefined}>
+      <div className={`case-glow glow-${sev}`} aria-hidden="true" />
+      <div className="case-inner" key={activeMessage.id}>
+        <header className="case-head">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span className="sevpill">
+                {activeMessage.is_flagged ? activeMessage.severity : 'clean'} ·{' '}
+                {Math.round(activeMessage.overall_score * 100)}%
+              </span>
+              <span className="muted num">Line {activeMessage.line_number}</span>
+            </div>
+            <h2 style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-0.03em', wordBreak: 'break-word' }}>
+              <button
+                type="button"
+                onClick={() => onOpenPlayerByName(activeMessage.player)}
+                title="Open player dossier"
+                style={{
+                  all: 'unset',
+                  cursor: 'pointer',
+                  borderBottom: '1px dashed var(--hair)',
+                }}
+              >
+                {activeMessage.player}
+              </button>
+            </h2>
+            <div className="muted" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 13 }}>
+              <span className="num">{activeMessage.timestamp}</span>
+              {activeMessage.categories.map((c) => (
+                <span key={c} className="tag">
+                  {c.replace(/_/g, ' ')}
+                </span>
+              ))}
+              {activeMessage.discord_message_url && (
                 <a
                   href={activeMessage.discord_message_url}
                   target="_blank"
                   rel="noreferrer"
-                  style={{ color: 'var(--accent-brand)', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.2rem' }}
+                  style={{ color: 'var(--text)', display: 'inline-flex', alignItems: 'center', gap: 4 }}
                 >
-                  Discord Jump <ExternalLink size={11} />
+                  Open in Discord <ExternalLink size={12} />
                 </a>
-              </>
-            )}
+              )}
+            </div>
           </div>
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-          <button
-            type="button"
-            className="btn-primary"
-            style={{
-              height: '28px',
-              padding: '0 0.6rem',
-              fontSize: '0.71rem',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '0.3rem',
-              background: 'var(--accent-primary)',
-              color: 'var(--accent-primary-text)',
-            }}
-            disabled={isSubmittingPunishment}
-            onClick={() => onLogPunishment(false, staffActionMode, true)}
-            title="Log punishment to Ledger & instantly advance to next flagged case (Shortcut: P)"
-          >
-            <Zap size={12} />
-            <span>Fast Log &amp; Next [P]</span>
-          </button>
-          <button
-            type="button"
-            className="close-btn"
-            disabled={!canStepPrev}
-            onClick={() => onStepCase(-1)}
-            title="Previous Message in Queue (K)"
-            style={{ opacity: canStepPrev ? 1 : 0.35 }}
-          >
-            <ChevronUp size={16} />
-          </button>
-          <button
-            type="button"
-            className="close-btn"
-            disabled={!canStepNext}
-            onClick={() => onStepCase(1)}
-            title="Next Message in Queue (J)"
-            style={{ opacity: canStepNext ? 1 : 0.35 }}
-          >
-            <ChevronDown size={16} />
-          </button>
-          <button
-            type="button"
-            className="close-btn"
-            onClick={onToggleExpandModal}
-            title={isExpandedModal ? 'Dock to Split View' : 'Expand Full Modal'}
-          >
-            {isExpandedModal ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
-          </button>
-          <button
-            type="button"
-            className="close-btn"
-            onClick={onClose}
-            title="Close Inspector (Esc)"
-          >
-            <X size={17} />
-          </button>
-        </div>
-      </div>
-
-      <div className="inspector-body" key={activeMessage.id}>
-        {/* Captured Evidence Specimen */}
-        <div className="evidence-specimen-box">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
-            <span style={{ fontSize: '0.71rem', color: 'var(--text-muted)', fontWeight: 600 }}>
-              Captured Chat Evidence
-            </span>
+          <div style={{ display: 'flex', gap: 6 }}>
             <button
               type="button"
-              className="inline-link-btn"
-              onClick={() => onCopyText('raw-msg', activeMessage.message)}
+              className="btn icon"
+              disabled={!canStepPrev}
+              onClick={() => onStepCase(-1)}
+              title="Previous (K)"
+              aria-label="Previous case"
             >
-              {copiedKey === 'raw-msg' ? 'Copied' : 'Copy Text'}
+              <ChevronUp size={16} />
+            </button>
+            <button
+              type="button"
+              className="btn icon"
+              disabled={!canStepNext}
+              onClick={() => onStepCase(1)}
+              title="Next (J)"
+              aria-label="Next case"
+            >
+              <ChevronDown size={16} />
+            </button>
+            <button type="button" className="btn icon" onClick={onClose} title="Close (Esc)" aria-label="Close case">
+              <X size={16} />
             </button>
           </div>
-          <div style={{ fontSize: '0.98rem', color: 'var(--text-primary)', fontWeight: 600, wordBreak: 'break-word' }}>
-            "{activeMessage.message}"
+        </header>
+
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3>Message</h3>
+            <button type="button" className="btn ghost sm" onClick={() => onCopyText('raw-msg', activeMessage.message)}>
+              <Copy size={12} /> {copiedKey === 'raw-msg' ? 'Copied' : 'Copy'}
+            </button>
           </div>
+          <p className="evidence">{activeMessage.message}</p>
           {showDeobfuscatedDiff && (
-            <div style={{ marginTop: '0.45rem', paddingTop: '0.45rem', borderTop: '1px dashed var(--border-subtle)', fontFamily: 'var(--font-mono)', fontSize: '0.73rem', color: 'var(--sev-medium)' }}>
-              Normalized scan: "{deobfuscatedText}"
+            <div className="code" style={{ marginTop: 12 }}>
+              Normalized: {deobfuscatedText}
             </div>
           )}
-          <div style={{ marginTop: '0.4rem', fontFamily: 'var(--font-mono)', fontSize: '0.71rem', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
-            {activeMessage.raw_line}
-          </div>
+          {activeMessage.raw_line && (
+            <div className="code" style={{ marginTop: 10, fontSize: 11.5, opacity: 0.85 }}>
+              {activeMessage.raw_line}
+            </div>
+          )}
         </div>
 
-        {/* Rule vs Semantic AI Telemetry Breakdown */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.6rem' }}>
-          <div style={{ background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-sm)', padding: '0.65rem 0.75rem' }}>
-            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Composite</div>
-            <div style={{ marginTop: '0.2rem', fontFamily: 'var(--font-mono)', fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-              {(activeMessage.overall_score * 100).toFixed(0)}%
-            </div>
+        <div className="card">
+          <div className="scores">
+            <Ring value={activeMessage.overall_score} label="Overall" />
+            <Ring value={activeMessage.rule_score} label="Rules" />
+            <Ring value={activeMessage.ai_score} label="AI" />
           </div>
-          <div style={{ background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-sm)', padding: '0.65rem 0.75rem' }}>
-            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Rule Engine</div>
-            <div style={{ marginTop: '0.2rem', fontFamily: 'var(--font-mono)', fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-              {(activeMessage.rule_score * 100).toFixed(0)}%
-            </div>
-          </div>
-          <div style={{ background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-sm)', padding: '0.65rem 0.75rem' }}>
-            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Semantic AI</div>
-            <div style={{ marginTop: '0.2rem', fontFamily: 'var(--font-mono)', fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-              {(activeMessage.ai_score * 100).toFixed(0)}%
-            </div>
-          </div>
+          {activeMessage.reasons.length > 0 && (
+            <ul
+              style={{
+                listStyle: 'none',
+                margin: '16px 0 0',
+                padding: '14px 0 0',
+                borderTop: '1px solid var(--line)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+                fontSize: 13.5,
+              }}
+            >
+              {activeMessage.reasons.map((r, ri) => (
+                <li key={ri} style={{ display: 'flex', gap: 8 }}>
+                  <span style={{ color: 'var(--c)' }}>•</span>
+                  <span>{r}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
 
-        {/* Detection Triggers */}
-        {activeMessage.reasons.length > 0 && (
-          <div style={{ background: 'var(--bg-input)', padding: '0.7rem 0.9rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
-            <div style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
-              Detection Signals ({activeMessage.reasons.length})
-            </div>
-            {activeMessage.reasons.map((r, ri) => (
-              <div key={ri} className="reason-line">
-                · {r}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Surrounding Context Dialogue */}
-        <div className="context-thread-box">
-          <div className="context-thread-title">
-            <span>Surrounding Chat Context (±3 lines)</span>
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <h3>Context</h3>
             {contextData && (
-              <span style={{ color: 'var(--accent-brand)', fontFamily: 'var(--font-mono)', fontSize: '0.71rem' }}>
-                {contextData.classification.replace(/_/g, ' ')}
-              </span>
+              <span className="tag">{contextData.classification.replace(/_/g, ' ')}</span>
             )}
           </div>
-
           {isLoadingContext ? (
-            <div style={{ textAlign: 'center', padding: '0.85rem' }}>
-              <div className="spinner" style={{ margin: '0 auto' }} />
+            <div style={{ textAlign: 'center', padding: 16 }}>
+              <span className="spinner" />
             </div>
           ) : contextData ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               {contextData.preceding.map((p, pi) => (
-                <div key={`prec-${pi}`} className="thread-row">
-                  <span className="thread-time">{p.timestamp.split(' ').pop()}</span>
-                  <span className="thread-player">{p.player}</span>
-                  <span style={{ color: 'var(--text-secondary)', wordBreak: 'break-word' }}>{p.message}</span>
+                <div key={`p${pi}`} className="ctx muted">
+                  <b>{p.player}</b>
+                  <span style={{ wordBreak: 'break-word' }}>{p.message}</span>
                 </div>
               ))}
-
-              <div className="thread-row target">
-                <span className="thread-time">{contextData.target.timestamp.split(' ').pop()}</span>
-                <span className="thread-player">{contextData.target.player}</span>
-                <span style={{ color: 'var(--text-primary)', fontWeight: 600, wordBreak: 'break-word' }}>
-                  {contextData.target.message}
-                </span>
+              <div className="ctx on">
+                <b>{contextData.target.player}</b>
+                <span style={{ wordBreak: 'break-word', fontWeight: 600 }}>{contextData.target.message}</span>
               </div>
-
-              {contextData.succeeding.map((s, si) => (
-                <div key={`succ-${si}`} className="thread-row">
-                  <span className="thread-time">{s.timestamp.split(' ').pop()}</span>
-                  <span className="thread-player">{s.player}</span>
-                  <span style={{ color: 'var(--text-secondary)', wordBreak: 'break-word' }}>{s.message}</span>
+              {contextData.succeeding.map((x, si) => (
+                <div key={`s${si}`} className="ctx muted">
+                  <b>{x.player}</b>
+                  <span style={{ wordBreak: 'break-word' }}>{x.message}</span>
                 </div>
               ))}
-
               {contextData.context_notes.length > 0 && (
-                <div style={{ marginTop: '0.45rem', paddingTop: '0.45rem', borderTop: '1px solid var(--border-subtle)', fontSize: '0.73rem', color: 'var(--sev-high)' }}>
+                <p className="hint" style={{ padding: '6px 14px' }}>
                   {contextData.context_notes.join(' ')}
-                </div>
+                </p>
               )}
             </div>
           ) : (
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>No surrounding context available.</p>
+            <p className="muted">No surrounding context available.</p>
           )}
         </div>
 
-        {/* AUTOMATED /STAFF LOG OR REQUEST PUNISHMENT + MODAL AUTOFILL */}
-        <div className="punishment-panel" id="punishment-autofill-panel">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.65rem', paddingBottom: '0.55rem', borderBottom: '1px solid var(--border-default)' }}>
-            <span style={{ fontWeight: 700, fontSize: '0.86rem', color: 'var(--text-primary)' }}>
-              2-Step Discord Enforcement (<code>{activeSlashCmd}</code>)
-            </span>
-            <span style={{ fontSize: '0.69rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
-              {isRequestMode ? 'High-Duration Request Mode' : 'Direct Moderator Log Mode'}
-            </span>
-          </div>
-
-          {/* Mode Switcher: Log Punishment vs Request Punishment */}
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '1fr 1fr',
-              gap: '0.45rem',
-              marginBottom: '0.85rem',
-              background: 'var(--bg-input)',
-              padding: '0.3rem',
-              borderRadius: 'var(--radius-sm)',
-              border: '1px solid var(--border-default)',
-            }}
-          >
-            <button
-              type="button"
-              onClick={() => setStaffActionMode && setStaffActionMode('log')}
-              style={{
-                padding: '0.45rem 0.6rem',
-                borderRadius: 'var(--radius-xs)',
-                border: !isRequestMode ? '1px solid var(--border-default)' : '1px solid transparent',
-                background: !isRequestMode ? 'var(--accent-primary)' : 'transparent',
-                color: !isRequestMode ? 'var(--text-inverse)' : 'var(--text-secondary)',
-                fontFamily: 'var(--font-mono)',
-                fontSize: '0.72rem',
-                fontWeight: 700,
-                cursor: 'pointer',
-                textAlign: 'center',
-              }}
-              title="Standard moderator logged punishment (/staff log punishment)"
-            >
-              Log Punishment (/staff log)
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (setStaffActionMode) setStaffActionMode('request');
-                if (!punishmentDuration.trim()) {
-                  setPunishmentDuration('Permanent');
-                }
-              }}
-              style={{
-                padding: '0.45rem 0.6rem',
-                borderRadius: 'var(--radius-xs)',
-                border: isRequestMode ? '1px solid var(--sev-critical)' : '1px solid transparent',
-                background: isRequestMode ? 'var(--sev-critical)' : 'transparent',
-                color: isRequestMode ? '#ffffff' : 'var(--text-secondary)',
-                fontFamily: 'var(--font-mono)',
-                fontSize: '0.72rem',
-                fontWeight: 700,
-                cursor: 'pointer',
-                textAlign: 'center',
-              }}
-              title="Request higher-time punishment such as Permanent Ban or Mute (/staff request punishment)"
-            >
-              Request Punishment (/staff request)
-            </button>
-          </div>
-
-          <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontWeight: 600, marginBottom: '0.4rem' }}>
-            01. Slash Command Options (<code>{activeSlashCmd}</code>)
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.2fr', gap: '0.65rem', marginBottom: '0.75rem' }}>
-            <div>
-              <label style={{ display: 'block', fontSize: '0.71rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
-                punishment_type
-              </label>
-              <select
-                value={punishmentType}
-                onChange={(e) => setPunishmentType(e.target.value)}
-                className="filter-select"
-                style={{ width: '100%', height: '38px', fontFamily: 'var(--font-mono)' }}
-              >
-                <option value="Mute">Mute</option>
-                <option value="Ban">Ban</option>
-                <option value="TempBan">TempBan</option>
-                <option value="Warn">Warn</option>
-                <option value="Kick">Kick</option>
-              </select>
-            </div>
-
-            <div>
-              <label style={{ display: 'block', fontSize: '0.71rem', color: 'var(--text-primary)', fontWeight: 600, marginBottom: '0.25rem' }}>
-                duration * (Required)
-              </label>
-              <input
-                type="text"
-                value={punishmentDuration}
-                onChange={(e) => setPunishmentDuration(e.target.value)}
-                placeholder={isRequestMode ? 'e.g. Permanent, 30d, 14d, 7d' : 'e.g. 1h, 12h, 1d, 7d, Perm'}
-                className="token-input"
-                style={{
-                  borderColor: punishmentDuration.trim() ? 'var(--border-default)' : 'var(--sev-high)',
+        <div className="card" id="punishment-autofill-panel">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <h3>Enforcement</h3>
+            <div className="seg" role="group" aria-label="Action type" style={{ minWidth: 220 }}>
+              <button type="button" className={!isRequestMode ? 'on' : ''} onClick={() => setStaffActionMode?.('log')}>
+                Log
+              </button>
+              <button
+                type="button"
+                className={isRequestMode ? 'on' : ''}
+                onClick={() => {
+                  setStaffActionMode?.('request');
+                  if (!punishmentDuration.trim()) setPunishmentDuration('Permanent');
                 }}
-              />
+              >
+                Request
+              </button>
             </div>
           </div>
 
-          {/* Quick Duration Preset Bar */}
-          <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
-            {(isRequestMode
-              ? ['Permanent', '30d', '14d', '7d', '3d', '1d', '12h']
-              : ['30m', '1h', '12h', '1d', '7d', '30d', 'Permanent']
-            ).map((preset) => (
-              <button
-                key={preset}
-                type="button"
-                onClick={() => setPunishmentDuration(preset)}
-                className={`preset-chip-btn ${punishmentDuration === preset ? 'active' : ''}`}
-              >
-                {preset}
-              </button>
-            ))}
+          <div style={{ marginTop: 14 }}>
+            <span className="label">Punishment</span>
+            <div className="chips">
+              {['Mute', 'Ban', 'TempBan', 'Warn', 'Kick'].map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  className={`chip big ${punishmentType === t ? 'on' : ''}`}
+                  onClick={() => setPunishmentType(t)}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
           </div>
 
-          <div style={{ marginBottom: '0.85rem' }}>
-            <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.71rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
-              <span>evidence_links (Discord Message URL)</span>
-              <button
-                type="button"
-                onClick={() => onCopyText('evidence-link', punishmentEvidenceLinks)}
-                className="inline-link-btn"
-              >
-                {copiedKey === 'evidence-link' ? 'Copied' : 'Copy'}
-              </button>
+          <div style={{ marginTop: 14 }}>
+            <label className="label" htmlFor="pun-duration">
+              Duration
             </label>
             <input
+              id="pun-duration"
               type="text"
-              value={punishmentEvidenceLinks}
-              onChange={(e) => setPunishmentEvidenceLinks(e.target.value)}
-              className="token-input"
+              className="field"
+              value={punishmentDuration}
+              onChange={(e) => setPunishmentDuration(e.target.value)}
+              placeholder={isRequestMode ? 'e.g. Permanent, 30d, 7d' : 'e.g. 1h, 12h, 1d, 7d'}
+              style={!punishmentDuration.trim() ? { borderColor: 'var(--high)' } : undefined}
             />
-          </div>
-
-          {/* STEP 2: MODAL FIELDS */}
-          <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontWeight: 600, marginBottom: '0.4rem' }}>
-            02. Follow-Up Sub-Menu / Modal Fields (Username, Reason, Gamemode)
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.65rem', marginBottom: '0.65rem' }}>
-            <div>
-              <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.71rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
-                <span>Username</span>
+            <div className="chips" style={{ marginTop: 8 }}>
+              {durations.map((d) => (
                 <button
+                  key={d}
                   type="button"
-                  onClick={() => onCopyText('modal-user', punishmentUsername)}
-                  className="inline-link-btn"
+                  className={`chip ${punishmentDuration === d ? 'on' : ''}`}
+                  onClick={() => setPunishmentDuration(d)}
                 >
-                  {copiedKey === 'modal-user' ? 'Copied' : 'Copy'}
+                  {d}
                 </button>
-              </label>
-              <input
-                type="text"
-                value={punishmentUsername}
-                onChange={(e) => setPunishmentUsername(e.target.value)}
-                className="token-input"
-              />
-            </div>
-
-            <div>
-              <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.71rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
-                <span>Gamemode</span>
-                <button
-                  type="button"
-                  onClick={() => onCopyText('modal-gamemode', punishmentGamemode)}
-                  className="inline-link-btn"
-                >
-                  {copiedKey === 'modal-gamemode' ? 'Copied' : 'Copy'}
-                </button>
-              </label>
-              <input
-                type="text"
-                value={punishmentGamemode}
-                onChange={(e) => setPunishmentGamemode(e.target.value)}
-                placeholder="SMP, Lifesteal, BoxPvP"
-                className="token-input"
-              />
+              ))}
             </div>
           </div>
 
-          <div style={{ marginBottom: '0.85rem' }}>
-            <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.71rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
-              <span>Reason</span>
-              <button
-                type="button"
-                onClick={() => onCopyText('modal-reason', punishmentReason)}
-                className="inline-link-btn"
-              >
-                {copiedKey === 'modal-reason' ? 'Copied' : 'Copy'}
-              </button>
+          <div style={{ marginTop: 14 }}>
+            <label className="label" htmlFor="pun-reason">
+              Reason
             </label>
             <input
+              id="pun-reason"
               type="text"
+              className="field"
               value={punishmentReason}
               onChange={(e) => setPunishmentReason(e.target.value)}
-              className="token-input"
             />
           </div>
 
-          {/* Live Command Preview */}
-          <div
-            style={{
-              background: 'var(--bg-input)',
-              border: '1px solid var(--border-subtle)',
-              borderRadius: 'var(--radius-xs)',
-              padding: '0.5rem 0.7rem',
-              marginBottom: '0.85rem',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              gap: '0.5rem',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontFamily: 'var(--font-mono)', fontSize: '0.71rem', color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
-              <Terminal size={12} style={{ flexShrink: 0, color: 'var(--text-primary)' }} />
-              <span>
-                {activeSlashCmd} punishment_type:{punishmentType} duration:{punishmentDuration || '<duration>'} evidence_links:{punishmentEvidenceLinks}
-              </span>
+          <details style={{ marginTop: 14 }}>
+            <summary className="muted" style={{ cursor: 'pointer', fontSize: 13, fontWeight: 500 }}>
+              Details · username, gamemode, evidence, staff channel
+            </summary>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
+              <div>
+                <label className="label" htmlFor="pun-user">
+                  Username
+                </label>
+                <input
+                  id="pun-user"
+                  className="field"
+                  value={punishmentUsername}
+                  onChange={(e) => setPunishmentUsername(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="label" htmlFor="pun-mode">
+                  Gamemode
+                </label>
+                <input
+                  id="pun-mode"
+                  className="field"
+                  value={punishmentGamemode}
+                  onChange={(e) => setPunishmentGamemode(e.target.value)}
+                  placeholder="SMP, Lifesteal, BoxPvP"
+                />
+              </div>
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label className="label" htmlFor="pun-ev">
+                  Evidence link
+                </label>
+                <input
+                  id="pun-ev"
+                  className="field"
+                  value={punishmentEvidenceLinks}
+                  onChange={(e) => setPunishmentEvidenceLinks(e.target.value)}
+                />
+              </div>
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label className="label" htmlFor="pun-staff">
+                  Staff command channel (ID or URL)
+                </label>
+                <input
+                  id="pun-staff"
+                  className="field"
+                  value={staffCommandChannelId}
+                  onChange={(e) => onUpdateStaffChannelId(e.target.value)}
+                  placeholder="Staff command channel ID"
+                />
+              </div>
             </div>
+          </details>
+
+          <div className="code" style={{ marginTop: 14, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+            <span style={{ flex: 1, minWidth: 0 }}>{commandPreview}</span>
             <button
               type="button"
-              className="btn-secondary"
-              style={{ height: '26px', padding: '0 0.5rem', fontSize: '0.69rem' }}
-              onClick={() =>
-                onCopyText(
-                  'slash-preview',
-                  `${activeSlashCmd} punishment_type:${punishmentType} duration:${punishmentDuration || (isRequestMode ? 'Permanent' : '1d')} evidence_links:${punishmentEvidenceLinks}`
-                )
-              }
+              className="btn ghost sm"
+              onClick={() => onCopyText('slash-preview', commandPreview)}
+              aria-label="Copy command"
             >
-              <Copy size={11} />
-              {copiedKey === 'slash-preview' ? 'Copied' : 'Copy'}
+              <Copy size={12} /> {copiedKey === 'slash-preview' ? 'Copied' : 'Copy'}
             </button>
           </div>
 
-          {/* Target Staff Channel & Submit Buttons */}
-          <div style={{ marginBottom: '0.75rem' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.71rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
-              <Link size={11} />
-              <span>Target Staff Command Channel ID / URL</span>
-            </label>
-            <input
-              type="text"
-              value={staffCommandChannelId}
-              onChange={(e) => onUpdateStaffChannelId(e.target.value)}
-              placeholder="Staff Command Channel ID"
-              className="token-input"
-            />
-          </div>
-
-          <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap', marginBottom: '0.45rem' }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 14 }}>
             <button
               type="button"
-              className="btn-secondary"
-              style={{ flex: 1 }}
+              className="btn primary"
+              disabled={isSubmittingPunishment}
+              onClick={() => onLogPunishment(false, staffActionMode, true)}
+              title="Save to the punishment log, copy the command, and go to the next case"
+            >
+              <Zap size={14} /> {isRequestMode ? 'Request' : 'Log'} &amp; next <span className="kbd">P</span>
+            </button>
+            <button
+              type="button"
+              className="btn"
               disabled={isSubmittingPunishment}
               onClick={() => onLogPunishment(false, staffActionMode, false)}
             >
-              <Copy size={13} />
-              {isRequestMode ? 'Request & Copy' : 'Log & Copy'}
+              <Copy size={14} /> {isRequestMode ? 'Request' : 'Log'} &amp; copy
             </button>
-
             <button
               type="button"
-              className={isRequestMode ? 'btn-danger' : 'btn-primary'}
-              style={{ flex: 1.4 }}
+              className="btn"
               disabled={isSubmittingPunishment}
               onClick={() => onLogPunishment(true, staffActionMode, false)}
-              title={`Automatically sends ${activeSlashCmd} and submits the follow-up modal (username, reason, gamemode) via your Discord Token`}
+              title={`Send ${activeSlashCmd} to Discord with your token`}
             >
-              <Send size={13} />
-              {isSubmittingPunishment
-                ? `Executing ${activeSlashCmd} + Modal...`
-                : isRequestMode
-                ? 'Auto-Request in Discord'
-                : 'Auto-Log in Discord'}
+              <Send size={14} /> {isSubmittingPunishment ? 'Sending…' : 'Send to Discord'}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={isSubmittingPunishment}
+              onClick={() => onLogPunishment(true, staffActionMode, true)}
+              title="Send to Discord, then open the next flagged case"
+            >
+              <Send size={14} /> Send &amp; next
             </button>
           </div>
 
-          {/* Seamless Speed-Runner Button */}
-          <button
-            type="button"
-            className="btn-primary"
-            style={{
-              width: '100%',
-              height: '38px',
-              background: 'linear-gradient(135deg, var(--accent-primary) 0%, rgba(56, 189, 248, 0.85) 100%)',
-              color: '#000000',
-              fontWeight: 800,
-              fontSize: '0.78rem',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '0.45rem',
-            }}
-            disabled={isSubmittingPunishment}
-            onClick={() => onLogPunishment(true, staffActionMode, true)}
-            title="Auto-dispatch punishment via Discord Token and immediately advance to next flagged case (Keyboard shortcut: P)"
-          >
-            <Zap size={14} />
-            <span>⚡ Instant Auto-Dispatch &amp; Next Case [P]</span>
-          </button>
-
           {punishmentFeedback && (
             <div
+              role="status"
+              className="notice"
               style={{
-                marginTop: '0.75rem',
-                padding: '0.55rem 0.75rem',
-                borderRadius: 'var(--radius-xs)',
-                fontSize: '0.74rem',
-                fontFamily: 'var(--font-mono)',
-                background: punishmentFeedback.type === 'success' ? 'var(--status-confirmed-bg)' : 'var(--sev-critical-bg)',
-                border: `1px solid ${punishmentFeedback.type === 'success' ? 'var(--status-confirmed)' : 'var(--sev-critical-border)'}`,
-                color: 'var(--text-primary)',
+                marginTop: 14,
+                ['--c' as string]: punishmentFeedback.type === 'success' ? 'var(--ok)' : 'var(--crit)',
               }}
             >
               {punishmentFeedback.text}
@@ -675,92 +509,53 @@ export const CaseInspectorPanel: React.FC<CaseInspectorPanelProps> = ({
           )}
         </div>
 
-        {/* Moderator Investigatory Notes */}
-        <div>
-          <label style={{ display: 'block', fontSize: '0.73rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>
-            Moderator Case Notes
+        <div className="card">
+          <label className="label" htmlFor="moderator-note-textarea">
+            Notes
           </label>
           <textarea
             id="moderator-note-textarea"
+            className="field"
+            rows={3}
             value={moderatorNoteInput}
             onChange={(e) => setModeratorNoteInput(e.target.value)}
-            placeholder="Record investigatory notes, repeat-offender context, or appeal references..."
-            style={{
-              width: '100%',
-              background: 'var(--bg-input)',
-              border: '1px solid var(--border-default)',
-              borderRadius: 'var(--radius-sm)',
-              padding: '0.55rem 0.75rem',
-              color: 'var(--text-primary)',
-              fontFamily: 'var(--font-main)',
-              fontSize: '0.8rem',
-              minHeight: '56px',
-              resize: 'vertical',
-              outline: 'none',
-            }}
+            placeholder="Context, repeat-offender history, appeal references…"
           />
         </div>
       </div>
 
-      {/* Quick Disposition Footer */}
-      <div className="inspector-footer">
-        <div style={{ fontSize: '0.73rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
-          Status:{' '}
-          <span className={`status-text ${activeMessage.review_status}`}>
-            {activeMessage.review_status.replace('_', ' ')}
-          </span>
-        </div>
-
-        <div className="action-btn-group">
-          <button
-            type="button"
-            className="btn-action confirm"
-            onClick={() => onModeratorAction('confirmed')}
-            title="Shortcut: C"
-          >
-            Confirm
-          </button>
-          <button
-            type="button"
-            className="btn-action"
-            onClick={() => onModeratorAction('false_positive')}
-            title="Shortcut: X"
-          >
-            False Positive
-          </button>
-          <button
-            type="button"
-            className="btn-action"
-            onClick={() => onModeratorAction('reviewed')}
-            title="Shortcut: R"
-          >
-            Reviewed
-          </button>
-          <button
-            type="button"
-            className="btn-action"
-            onClick={() => onModeratorAction('ignored')}
-          >
-            Ignore
-          </button>
-        </div>
+      <div className="case-actions">
+        <span className="muted" style={{ fontSize: 13, marginRight: 'auto' }}>
+          Status: <b style={{ color: 'var(--text)', textTransform: 'capitalize' }}>{status.replace('_', ' ')}</b>
+        </span>
+        <button type="button" className="btn primary" onClick={() => onModeratorAction('confirmed')} title="Shortcut: C">
+          Confirm <span className="kbd" style={{ borderColor: 'currentColor', color: 'inherit', opacity: 0.7 }}>C</span>
+        </button>
+        <button type="button" className="btn" onClick={() => onModeratorAction('false_positive')} title="Shortcut: X">
+          False positive <span className="kbd">X</span>
+        </button>
+        <button type="button" className="btn" onClick={() => onModeratorAction('reviewed')} title="Shortcut: R">
+          Reviewed <span className="kbd">R</span>
+        </button>
+        <button type="button" className="btn ghost" onClick={() => onModeratorAction('ignored')}>
+          Ignore
+        </button>
       </div>
-    </>
+    </section>
   );
 
-  if (isExpandedModal) {
+  if (overlay) {
     return (
       <div className="modal-overlay" onClick={onClose}>
-        <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-          {inspectorInner}
+        <div
+          className="modal-content"
+          style={{ width: 'min(900px, 100%)', maxHeight: '92vh', overflowY: 'auto' }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {inner}
         </div>
       </div>
     );
   }
-
-  return (
-    <aside className="case-inspector-dock" aria-label="Case Inspector">
-      {inspectorInner}
-    </aside>
-  );
+  return inner;
 };
